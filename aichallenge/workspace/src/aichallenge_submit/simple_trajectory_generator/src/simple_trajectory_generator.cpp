@@ -22,6 +22,9 @@
 #include <vector>
 #include <sstream>
 
+#include <cmath>
+#include <yaml-cpp/yaml.h>
+
 using Trajectory = autoware_auto_planning_msgs::msg::Trajectory;
 using TrajectoryPoint = autoware_auto_planning_msgs::msg::TrajectoryPoint;
 
@@ -40,6 +43,14 @@ public:
     z_= declare_parameter<float>("z");
     std::string csv_path = get_parameter("csv_path").as_string();
     
+    // declare mpc_config file
+    const std::string mpc_config_path = get_parameter("mpc_config_path").as_string();
+
+    // if no mpc_config_path specified
+    if (!mpc_config_path.empty()) {
+      csv_path = get_csv_path_from_mpc_config(mpc_config_path);
+    }
+
     if (csv_path.empty()) {
       RCLCPP_ERROR(get_logger(), "CSV path is not specified");
       return;
@@ -49,8 +60,11 @@ public:
       RCLCPP_ERROR(get_logger(), "Failed to load CSV file: %s", csv_path.c_str());
       return;
     }
+
+    current_csv_path_ = csv_path;
     
-    RCLCPP_INFO(get_logger(), "Loaded trajectory from CSV with %zu points", csv_trajectory_.points.size());
+    RCLCPP_INFO(get_logger(), "Loaded trajectory from CSV: %s with %zu points",
+                csv_path.c_str(), csv_trajectory_.points.size());
 
     timer_ = rclcpp::create_timer(
       this, get_clock(), std::chrono::seconds(1),
@@ -82,42 +96,46 @@ private:
       while (std::getline(ss, token, ',')) {
         values.push_back(std::stod(token));
       }
-      
-      // MPC has 7, while default raceline has 8
-      if (values.size() != 7) {
-        RCLCPP_WARN(get_logger(), "Invalid CSV line format, expected 7 values");
+
+      TrajectoryPoint point;  
+      if (values.size() == 8) {
+        // raceline: x, y, z, x_quat, y_quat, z_quat, w_quat, speed
+        point.pose.position.x = values[0];
+        point.pose.position.y = values[1];
+        point.pose.orientation.x = values[3];
+        point.pose.orientation.y = values[4];
+        point.pose.orientation.z = values[5];
+        point.pose.orientation.w = values[6];
+        point.longitudinal_velocity_mps = values[7];
+      } else if (values.size() == 7) {
+        // MPC: s_m, x_m, y_m, psi_rad, kappa_radpm, vx_mps, ax_mps2
+        // Note: in mpc
+        // x: values[1]
+        // y: values[2]
+        // psi: values[3]
+        // x_quat, y_quat = 0 (no pitch and roll)
+        // z_quat = sin(psi/2)
+        // w_quat = cos(psi/2)
+        // v = values[5]
+        point.pose.position.x = values[1];
+        point.pose.position.y = values[2];
+        const double psi = values[3];
+        point.pose.orientation.x = 0.0;
+        point.pose.orientation.y = 0.0;
+        point.pose.orientation.z = std::sin(psi * 0.5);
+        point.pose.orientation.w = std::cos(psi * 0.5);
+        point.longitudinal_velocity_mps = values[5];
+      } else {
+        RCLCPP_WARN(get_logger(), "Invalid CSV line format, expected 7 or 8 values");
         continue;
       }
-      
-      // Note: in mpc
-      // x: values[1]
-      // y: values[2]
-      // psi: values[3]
-      // x_quat, y_quat = 0 (no pitch and roll)
-      // z_quat = sin(psi/2)
-      // w_quat = cos(psi/2)
-      // v = values[5]
 
-      TrajectoryPoint point;
-      point.pose.position.x = values[1];
-      point.pose.position.y = values[2];
       point.pose.position.z = z_;
-
-      point.pose.orientation.x = 0.0;
-      point.pose.orientation.y = 0.0;
-      const auto &psi = values[3];
-      point.pose.orientation.z = std::sin(psi/2);
-      point.pose.orientation.w = std::cos(psi/2);
-
-      point.longitudinal_velocity_mps = values[5];
-      
       point.lateral_velocity_mps = 0.0;
       point.acceleration_mps2 = 0.0;
       point.heading_rate_rps = 0.0;
-      
       csv_trajectory_.points.push_back(point);
     }
-    
     return !csv_trajectory_.points.empty();
   }
   
@@ -172,6 +190,25 @@ private:
           result.successful = false;
           result.reason = "Invalid type for csv_path parameter.";
         }
+      } else if (param.get_name() == "mpc_config_path") {
+      if (param.get_type() == rclcpp::ParameterType::PARAMETER_STRING) {
+        const std::string new_config = param.as_string();
+        const std::string new_csv = get_csv_path_from_mpc_config(new_config);
+        if (new_csv.empty()) {
+          result.successful = false;
+          result.reason = "Failed to get csv_path from mpc config.";
+          continue;
+        }
+        if (new_csv != current_csv_path_ && loadCSVTrajectory(new_csv)) {
+          current_csv_path_ = new_csv;
+          RCLCPP_INFO(get_logger(), "Loaded trajectory from MPC config CSV: %s with %zu points",
+                      current_csv_path_.c_str(), csv_trajectory_.points.size());
+        } else if (new_csv != current_csv_path_) {
+          RCLCPP_ERROR(get_logger(), "Failed to load new CSV file: %s", new_csv.c_str());
+          result.successful = false;
+          result.reason = "Failed to load new CSV file.";
+        }
+      }
       } else if (param.get_name() == "z") {
         if (param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE || param.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER) {
           z_ = static_cast<float>(param.as_double());
@@ -184,6 +221,35 @@ private:
       }
     }
     return result;
+  }
+
+  // get csv path from mpc config
+  std::string get_csv_path_from_mpc_config(const std::string & mpc_config_path)
+  {
+    try {
+      const YAML::Node config = YAML::LoadFile(mpc_config_path);
+      const YAML::Node reference_path = config["reference_path"];
+      if (!reference_path || !reference_path["csv_path"]) {
+        RCLCPP_ERROR(
+          get_logger(), "'reference_path.csv_path' not found in %s", mpc_config_path.c_str());
+        return "";
+      }
+      const std::string rel_csv = reference_path["csv_path"].as<std::string>();
+      if (rel_csv.empty()) {
+        RCLCPP_ERROR(
+          get_logger(), "'reference_path.csv_path' is empty in %s", mpc_config_path.c_str());
+        return "";
+      }
+      // config.yaml lives in <share>/config/, reference paths are relative to <share>/
+      const auto share_dir = std::filesystem::path(mpc_config_path).parent_path().parent_path();
+      const std::string full_csv = (share_dir / rel_csv).string();
+      RCLCPP_INFO(get_logger(), "Using MPC reference path: %s", full_csv.c_str());
+      return full_csv;
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(get_logger(), "Failed to parse MPC config '%s': %s",
+                   mpc_config_path.c_str(), e.what());
+      return "";
+    }
   }
   
   rclcpp::Publisher<Trajectory>::SharedPtr pub_;

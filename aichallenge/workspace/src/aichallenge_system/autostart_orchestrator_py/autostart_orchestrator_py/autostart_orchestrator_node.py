@@ -12,6 +12,10 @@ import time
 from pathlib import Path
 from typing import Optional
 
+#++++++++++++
+from nav_msgs.msg import Odometry
+#+++++++++++
+
 import rclpy
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -125,6 +129,19 @@ class AutostartOrchestrator(Node):
         rclpy.get_default_context().on_shutdown(self._on_rclpy_shutdown)
 
         self._sub = self.create_subscription(String, vehicle_state_topic, self._on_vehicle_state, 10, callback_group=cbg)
+
+        #+++++++++++
+        # # --- 1. ADD WATCHDOG SETUP HERE ---
+        self._last_moving_time = time.time()
+        self._is_stalled = False
+        self._vel_sub = self.create_subscription(
+            Odometry, 
+            "/localization/kinematic_state", 
+            self._on_velocity, 
+            10, 
+            callback_group=cbg
+        )
+        #+++++++++++
 
         self._cli_initial_pose = self.create_client(
             Trigger, str(self.get_parameter("initial_pose_service").value), callback_group=cbg
@@ -411,6 +428,32 @@ class AutostartOrchestrator(Node):
         with self._cond:
             self._last_vehicle_state = state
             self._cond.notify_all()
+
+    #====================
+    # --- 2. ADD WATCHDOG CALLBACK HERE ---
+    def _on_velocity(self, msg: Odometry) -> None:
+        vx = msg.twist.twist.linear.x
+        vy = msg.twist.twist.linear.y
+        speed = (vx**2 + vy**2)**0.5
+        
+        # Only monitor while the car is actively supposed to be moving
+        if self._workflow_state in (self._STATE_RUNNING, self._STATE_RECORDING, self._STATE_WAIT_STOP):
+            if speed > 0.1:
+                self._last_moving_time = time.time()
+            elif (time.time() - self._last_moving_time) > 5.0:
+                self._is_stalled = True
+                
+                # Write flag immediately
+                flag_path = self._output_dir() / "stalled.flag"
+                with open(str(flag_path), "w") as f:
+                    f.write("stalled")
+                
+                # Trip state and trigger shutdown
+                with self._cond:
+                    self._last_vehicle_state = "finish"
+                    self._cond.notify_all()
+
+    #====================
 
     @staticmethod
     def _normalize_state(raw: Optional[str]) -> str:
@@ -1032,6 +1075,22 @@ class AutostartOrchestrator(Node):
 
             self._set_workflow_state(self._STATE_STOPPING, "stopping capture/rosbag")
             self._finalize_recordings(enable_rosbag, enable_capture, enable_motion_analytics)
+
+
+            #+++++++++++++++++
+
+            finish_flag_path = self._output_dir() / "finished.flag"[cite: 2]
+            with open(str(finish_flag_path), "w") as f:
+                f.write("finished")
+
+            # --- 3. ADD STALL LOGGING HERE ---
+            if getattr(self, '_is_stalled', False):
+                flag_path = self._output_dir() / "stalled.flag"
+                with open(str(flag_path), "w") as f:
+                    f.write("stalled")
+                self.get_logger().warn("Watchdog triggered: Vehicle stalled!")
+
+            #+++++++++++++++++
 
             self._set_workflow_state(self._STATE_FINISHED, "shutdown requested")
             if exit_on_finish:

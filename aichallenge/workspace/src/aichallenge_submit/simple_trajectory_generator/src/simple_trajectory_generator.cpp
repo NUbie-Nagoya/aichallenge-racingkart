@@ -40,13 +40,14 @@ public:
 
 
     declare_parameter("csv_path", "");
+    declare_parameter("mpc_config_path","");
     z_= declare_parameter<float>("z");
-    std::string csv_path = get_parameter("csv_path").as_string();
+    std::string csv_path= get_parameter("csv_path").as_string() ;
     
     // declare mpc_config file
     const std::string mpc_config_path = get_parameter("mpc_config_path").as_string();
 
-    // if no mpc_config_path specified
+    // if mpc_config_path specified, replace csv path with one from mpc config
     if (!mpc_config_path.empty()) {
       csv_path = get_csv_path_from_mpc_config(mpc_config_path);
     }

@@ -1,3 +1,6 @@
+from datetime import datetime
+from logging import config
+
 import numpy as np
 from skopt import gp_minimize
 from skopt.space import Real
@@ -143,24 +146,40 @@ def calculate_jbo_from_rosbag(mcap_path: str, ref_points: np.ndarray) -> float:
 #     Real(1e-3, 1e3, prior='log-uniform', name='r_delta')
 # ]
 
+# Second try
+# space = [
+#     Real(5e5, 1e7, prior='log-uniform', name='q_y'),
+#     Real(1e7, 5e8, prior='log-uniform', name='q_psi'),
+#     Real(5e4, 5e6, prior='log-uniform', name='q_v'),
+#     Real(1e-2, 1e2, prior='log-uniform', name='r_delta')
+# ]
+
+# Third try
+
+R_a = 1.0
 space = [
-    Real(5e5, 1e7, prior='log-uniform', name='q_y'),
-    Real(1e7, 5e8, prior='log-uniform', name='q_psi'),
-    Real(5e4, 5e6, prior='log-uniform', name='q_v'),
-    Real(1e-2, 1e2, prior='log-uniform', name='r_delta')
+    Real(1, 300, prior='log-uniform', name='q_y'),
+    Real(10, 1000, prior='log-uniform', name='q_psi'),
+    Real(0.1, 50, prior='log-uniform', name='q_v'),
+    Real(0.01, 10, prior='log-uniform', name='r_delta'),
+    Real(1, 20, prior='uniform', name='factor_qn')
 ]
 
 # FUNCTION: Update YAML with newMPC weights
-def update_mpc_yaml(q_y, q_psi, q_v, r_delta): # qN_y, qN_psi, qN_v, r_v
+def update_mpc_yaml(q_y, q_psi, q_v, r_delta, factor_qn): # qN_y, qN_psi, qN_v, r_v
     yaml_path = os.path.expanduser("~/aichallenge-racingkart/aichallenge/workspace/src/aichallenge_submit/multi_purpose_mpc_ros/config/config.yaml") # Make sure this is the absolute path to your Autoware config
     
     with open(yaml_path, 'r') as file:
         config = yaml.safe_load(file)
         
-    # Directly assign to the dictionary keys
+    # Second try # Directly assign to the dictionary keys
+    # config['mpc']['Q'] = [float(q_y), float(q_psi), float(q_v)]
+    # config['mpc']['R'] = [100000.0, float(r_delta)]
+    # config['mpc']['QN'] = [1000000.0, 1000.0, 10000.0] # [float(qN_y), float(qN_psi), float(qN_v)]
+
     config['mpc']['Q'] = [float(q_y), float(q_psi), float(q_v)]
-    config['mpc']['R'] = [100000.0, float(r_delta)]
-    config['mpc']['QN'] = [1000000.0, 1000.0, 10000.0] # [float(qN_y), float(qN_psi), float(qN_v)]
+    config['mpc']['R'] = [float(R_a), float(r_delta)]
+    config['mpc']['QN'] = [float(q_y)*float(factor_qn), float(q_psi)*float(factor_qn), float(q_v)*float(factor_qn)]
 
     with open(yaml_path, 'w') as file:
         yaml.dump(config, file)
@@ -234,46 +253,63 @@ def update_mpc_yaml(q_y, q_psi, q_v, r_delta): # qN_y, qN_psi, qN_v, r_v
 #         return J_BO
 
 @use_named_args(space)
-def evaluate_mpc_maneuver(q_y, q_psi, q_v, r_delta):
-    update_mpc_yaml(q_y, q_psi, q_v, r_delta)
+def evaluate_mpc_maneuver(q_y, q_psi, q_v, r_delta, factor_qn):
+    # 1. Update config parameters
+    update_mpc_yaml(q_y, q_psi, q_v, r_delta, factor_qn)
     
-    repo_dir = os.path.expanduser("~/aichallenge-racingkart")
-    output_dir = Path(repo_dir) / "output"
+    repo_dir = Path(os.path.expanduser("~/aichallenge-racingkart"))
+    output_dir = repo_dir / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n[BO] Starting run: Q=[{q_y:.1f}, {q_psi:.1f}, {q_v:.1f}], R=[{r_delta:.3f}]")
     
-    stalled_flag_path = output_dir / "latest" / "d1" / "stalled.flag"
-    finished_flag_path = output_dir / "latest" / "d1" / "finished.flag"
-    bag_path = output_dir / "latest" / "d1" / "rosbag2_autoware.mcap"
+    # 2. Record launch time and start simulation
+    launch_time = time.time()
+    env = os.environ.copy()
+    env["ROSBAG"] = "true"
+    subprocess.run(["make", "dev"], cwd=repo_dir, env=env, stdout=subprocess.DEVNULL)
     
-    # Remove stale flags from previous runs
-    for flag in [stalled_flag_path, finished_flag_path]:
-        if flag.exists():
-            flag.unlink()
-            
-    print(f"\n[BO] Starting run with Q=[{q_y:.3f}, {q_psi:.3f}, {q_v:.3f}] and R=[{r_delta:.3f}]...")
-    subprocess.run(["make", "dev"], cwd=repo_dir, stdout=subprocess.DEVNULL)
-    
-    # Wait for the lap to complete, stall, or hit max timeout
+    # 3. Poll for the newly created run directory and its flags
     status = "timeout"
-    timeout_sec = 90.0  # Max seconds allowed for a full lap
+    timeout_sec = 130.0
     start_time = time.time()
+    active_run_dir = None
     
     while time.time() - start_time < timeout_sec:
-        if stalled_flag_path.exists():
-            status = "stalled"
-            break
-        if finished_flag_path.exists():
-            status = "finished"
-            break
+        # Dynamically locate the directory created for this run
+        if active_run_dir is None:
+            candidates = [
+                d for d in output_dir.iterdir()
+                if d.is_dir() and d.name.startswith("202") and d.stat().st_mtime >= (launch_time - 2.0)
+            ]
+            if candidates:
+                # Pick the latest matching timestamp folder
+                active_run_dir = max(candidates, key=lambda d: d.stat().st_mtime)
+
+        # Check for status flags inside the active run's d1 folder
+        if active_run_dir is not None:
+            stalled_flag = active_run_dir / "d1" / "stalled.flag"
+            finished_flag = active_run_dir / "d1" / "finished.flag"
+            
+            if stalled_flag.exists():
+                status = "stalled"
+                break
+            if finished_flag.exists():
+                status = "finished"
+                break
+                
         time.sleep(1.0)
         
     print(f"[BO] Run ended with status: {status} ({time.time() - start_time:.1f}s)")
     
-    # Stop containers for next run
+    # 4. Teardown containers
     subprocess.run(["docker", "compose", "down"], cwd=repo_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(2.0)
     
-    if status == "finished":
-        time.sleep(1.0)  # Ensure disk flush
+    # 5. Compute objective score
+    if status == "finished" and active_run_dir is not None:
+        bag_path = active_run_dir / "d1" / "rosbag2_autoware.mcap"
+        time.sleep(1.0)  # Ensure MCAP write finishes
         return calculate_jbo_from_rosbag(str(bag_path), REFERENCE_WAYPOINTS)
     else:
         return 10000.0
@@ -286,7 +322,7 @@ if __name__ == "__main__":
         func=evaluate_mpc_maneuver,   # the function to minimize
         dimensions=space,             # the 7D bounds
         acq_func="EI",                # Expected Improvement acquisition function
-        n_calls=50,                   # Total number of simulation runs
+        n_calls=150,                   # Total number of simulation runs
         n_initial_points=10,          # Random exploration points before GP takes over
         random_state=42               # For reproducible results
     )

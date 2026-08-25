@@ -1,0 +1,19 @@
+[project]
+name = "aichallenge-racingkart"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Gabriel Alteza", email = "alteza.gabriel@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "casadi>=3.7.2",
+]
+
+[project.scripts]
+aichallenge-racingkart = "aichallenge_racingkart:main"
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"

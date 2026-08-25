@@ -104,7 +104,7 @@ def has_collision_in_line(map, p0, p1):
 ############
 
 class Waypoint:
-    def __init__(self, x, y, psi, kappa):
+    def __init__(self, x, y, psi, kappa, v_ref: Optional[float] = None, lb: Optional[float] = None, ub: Optional[float] = None):
         """
         Waypoint object containing x, y location in global coordinate system,
         orientation of waypoint psi and local curvature kappa. Waypoint further
@@ -121,15 +121,15 @@ class Waypoint:
         self.kappa = kappa
 
         # Reference velocity at this waypoint according to speed profile
-        self.v_ref = None
+        self.v_ref = v_ref
 
         # Information about drivable area at waypoint
         # upper and lower bound of drivable area orthogonal to
         # waypoint orientation.
         # Upper bound: free drivable area to the left of center-line in m
         # Lower bound: free drivable area to the right of center-line in m
-        self.lb = None
-        self.ub = None
+        self.lb = lb
+        self.ub = ub
         self.lb_sm = None
         self.ub_sm = None
         self.static_border_cells = None
@@ -160,7 +160,7 @@ class BorderCells:
 
 class ReferencePath:
     def __init__(self, map, wp_x, wp_y, resolution, smoothing_distance,
-                 max_width, circular):
+                 max_width, circular, wp_vx: Optional[List[float]] = None):
         """
         Reference Path object. Create a reference trajectory from specified
         corner points with given resolution. Smoothing around corners can be
@@ -178,6 +178,7 @@ class ReferencePath:
 
         self.org_wp_x = wp_x
         self.org_wp_y = wp_y
+        self.org_wp_vx = wp_vx
 
         # Precision
         self.eps = 1e-12
@@ -195,7 +196,7 @@ class ReferencePath:
         self.circular = circular
 
         # List of waypoint objects
-        self.waypoints = self._construct_path(wp_x, wp_y)
+        self.waypoints, self.waypoint_velocities = self._construct_path(wp_x, wp_y, wp_vx)
 
         # Number of waypoints
         self.n_waypoints = len(self.waypoints)
@@ -228,11 +229,17 @@ class ReferencePath:
             wp.ub_sm = copy.deepcopy(wp.ub)
             wp.lb_sm = copy.deepcopy(wp.lb)
 
+
+    ##### OLD STUFF ##########
+    # def set_v_ref(self, v_ref: List[float]) -> None:
+    #     for wp, v in zip(self.waypoints, v_ref):
+    #         wp.v_ref = v
+
     def set_v_ref(self, v_ref: List[float]) -> None:
-        for wp, v in zip(self.waypoints, v_ref):
+        for wp, v in zip(self.waypoints, self.waypoint_velocities):
             wp.v_ref = v
 
-    def _construct_path(self, wp_x, wp_y):
+    def _construct_path(self, wp_x, wp_y, wp_vx):
         """
         Construct path from given waypoints.
         :param wp_x: x coordinates of waypoints in global coordinates
@@ -245,6 +252,7 @@ class ReferencePath:
             # FIXME: コースを循環させるときに始点と終点にギャップができないように要素を追加している。しかし、 smoothing_distance に応じて追加要素数を調整する必要があり、マジックナンバーが存在している
             wp_x = wp_x + wp_x[:self.smoothing_distance * 3]
             wp_y = wp_y + wp_y[:self.smoothing_distance * 3]
+            wp_vx = wp_vx + wp_vx[:self.smoothing_distance * 3]
 
         # Number of waypoints
         n_wp = [max(1, int(np.sqrt((wp_x[i + 1] - wp_x[i]) ** 2 +
@@ -252,30 +260,35 @@ class ReferencePath:
                 self.resolution)) for i in range(len(wp_x) - 1)]
 
         # Construct waypoints with specified resolution
-        gp_x, gp_y = wp_x[-1], wp_y[-1]
+        gp_x, gp_y, gp_vx = wp_x[-1], wp_y[-1], wp_vx[-1]
         wp_x = [np.linspace(wp_x[i], wp_x[i+1], n_wp[i], endpoint=False).
                     tolist() for i in range(len(wp_x)-1)]
         wp_x = [wp for segment in wp_x for wp in segment] + [gp_x]
         wp_y = [np.linspace(wp_y[i], wp_y[i + 1], n_wp[i], endpoint=False).
                     tolist() for i in range(len(wp_y) - 1)]
         wp_y = [wp for segment in wp_y for wp in segment] + [gp_y]
+        wp_vx = [np.linspace(wp_vx[i], wp_vx[i + 1], n_wp[i], endpoint=False).
+                    tolist() for i in range(len(wp_vx) - 1)]
+        wp_vx = [wp for segment in wp_vx for wp in segment] + [gp_vx]
 
         # Smooth path
         wp_xs = []
         wp_ys = []
+        waypoint_velocities = []
         for wp_id in range(self.smoothing_distance, len(wp_x) -
                                                     self.smoothing_distance):
             wp_xs.append(np.mean(wp_x[wp_id - self.smoothing_distance:wp_id
                                             + self.smoothing_distance + 1]))
             wp_ys.append(np.mean(wp_y[wp_id - self.smoothing_distance:wp_id
                                             + self.smoothing_distance + 1]))
-
+            waypoint_velocities.append(np.mean(wp_vx[wp_id - self.smoothing_distance:wp_id
+                                            + self.smoothing_distance + 1]))
         # Construct list of waypoint objects
         waypoints = list(zip(wp_xs, wp_ys))
         # print(f"n_wp: {n_wp}, smooth_dist: {self.smoothing_distance}, len(wp_x): {len(wp_x)}, len way: {len(waypoints)}")
         waypoints = self._construct_waypoints(waypoints)
 
-        return waypoints
+        return waypoints, waypoint_velocities
 
     def _construct_waypoints(self, waypoint_coordinates):
         """

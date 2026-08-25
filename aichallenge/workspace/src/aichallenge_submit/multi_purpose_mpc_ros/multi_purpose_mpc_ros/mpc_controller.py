@@ -328,7 +328,7 @@ class MPCController(Node):
             is_ref_path_given = cfg_ref_path.csv_path != "" # type: ignore
             if is_ref_path_given:
                 print("Using given reference path")
-                wp_x, wp_y, _, _ = load_ref_path(self.in_pkg_share(self._cfg.reference_path.csv_path)) # type: ignore
+                _, wp_x, wp_y, _, _, wp_vx, _ = load_ref_path(self.in_pkg_share(self._cfg.reference_path.csv_path)) # type: ignore
                 return ReferencePath(
                     map,
                     wp_x,
@@ -336,7 +336,8 @@ class MPCController(Node):
                     cfg_ref_path.resolution,
                     cfg_ref_path.smoothing_distance,
                     cfg_ref_path.max_width,
-                    cfg_ref_path.circular)
+                    cfg_ref_path.circular,
+                    wp_vx=wp_vx)
 
             else:
                 print("Using waypoints to create reference path")
@@ -807,14 +808,20 @@ class MPCController(Node):
             u, max_delta = self._mpc.get_control()
             # self.get_logger().info(f"u: {u}")
 
-        if self._ref_vel_configulator is not None:
-            ref_vel_mps = self._ref_vel_configulator.get_ref_vel(self._mpc.model.wp_id)
-            ref_vel_kmph = min(
-                kmh_to_m_per_sec(ref_vel_mps),
-                self._mpc_cfg.v_max)
-            self._mpc.update_v_max(ref_vel_kmph)
-            v_ref: List[float] = [ref_vel_kmph] * len(self._reference_path.waypoints)
-            self._reference_path.set_v_ref(v_ref)
+
+
+
+        ## NOTE: WHY? ##
+
+
+        # if self._ref_vel_configulator is not None:
+        #     ref_vel_mps = self._ref_vel_configulator.get_ref_vel(self._mpc.model.wp_id)
+        #     ref_vel_kmph = min(
+        #         kmh_to_m_per_sec(ref_vel_mps),
+        #         self._mpc_cfg.v_max)
+        #     self._mpc.update_v_max(ref_vel_kmph)
+        #     v_ref: List[float] = [ref_vel_kmph] * len(self._reference_path.waypoints)
+        #     self._reference_path.set_v_ref(v_ref)
 
         # override by brake command if control is disabled
         if not self._enable_control:

@@ -60,6 +60,36 @@ racing-maneuver-export runs/baseline/best.pt runs/baseline/policy.ts
 
 Training uses weighted Huber steering/acceleration losses plus action-change loss and writes `best.pt`, `last.pt`, resolved config, normalizer, split manifest, curves, validation metrics, and provenance. Evaluation reports teacher-forced and runtime-oriented autoregressive metrics, including maneuver, opponent, and closing-speed slices. Promotion decisions should use autoregressive results.
 
+### Train the included MPC-expert smoke dataset on a remote machine
+
+The branch includes a processed, causally aligned MPC-expert dataset at:
+
+```text
+data/processed/mpc/20260827-114404-d6cb0e3d.npz
+```
+
+It contains 49,742 frames partitioned into 56 causal lap groups. Clone the feature
+branch and run the dedicated within-session experiment without downloading the raw
+MCAP bag:
+
+```bash
+git clone --branch feat/racing_maneuver_il \
+  https://github.com/NUbie-Nagoya/aichallenge-racingkart.git
+cd aichallenge-racingkart/aichallenge/ml_workspace/racing_maneuver_il
+
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+pip install -e .
+
+python -m racing_maneuver_il.train config/train_mpc_within_session.yaml
+```
+
+Outputs are written to `runs/mpc-within-session-20260827-114404/`. This split keeps
+complete laps disjoint, but every lap comes from one recording, scenario, seed, and
+MPC configuration. Treat its validation/test metrics only as **within-session MPC
+imitation** metrics—not cross-scenario or deployment-quality evidence.
+
 The TorchScript wrapper accepts **raw** `[B, 10, 360]` LiDAR and `[B, 10, 11]` auxiliary tensors. It owns normalization and maps bounded network outputs to serialized physical limits. Export writes both `policy.ts` and `policy.ts.metadata.json`; deploy both. Metadata includes the producing PyTorch version, schema/geometry/history/order/units/limits/normalizer, opponent preprocessing, and dataset/split provenance. **Train/export with the same PyTorch major.minor used by the Autoware runtime** (verify with `python3 -c 'import torch; print(torch.__version__)'` inside that runtime). The controller reads the sidecar and refuses incompatible artifacts before calling `torch.jit.load`.
 
 ## Scan contract inspection

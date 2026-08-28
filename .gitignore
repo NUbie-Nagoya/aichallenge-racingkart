@@ -25,3 +25,5 @@ doc/tmp/*
 
 docs/plan/
 result-*.json
+
+.venv/

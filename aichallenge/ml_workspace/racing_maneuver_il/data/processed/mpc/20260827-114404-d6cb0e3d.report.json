@@ -1,0 +1,131 @@
+{
+  "accepted_rows": 49742,
+  "bag": "rawdata/20260827-114404-d6cb0e3d",
+  "command_distributions": {
+    "longitudinal_acceleration": {
+      "max": 3.0,
+      "min": -3.0
+    },
+    "steering": {
+      "max": 0.4818528890609741,
+      "min": -0.581859827041626
+    }
+  },
+  "episode_ids": [
+    "follow-gap8-opponent-steady-01::lap-1",
+    "follow-gap8-opponent-steady-01::lap-10",
+    "follow-gap8-opponent-steady-01::lap-11",
+    "follow-gap8-opponent-steady-01::lap-12",
+    "follow-gap8-opponent-steady-01::lap-13",
+    "follow-gap8-opponent-steady-01::lap-14",
+    "follow-gap8-opponent-steady-01::lap-15",
+    "follow-gap8-opponent-steady-01::lap-16",
+    "follow-gap8-opponent-steady-01::lap-17",
+    "follow-gap8-opponent-steady-01::lap-18",
+    "follow-gap8-opponent-steady-01::lap-19",
+    "follow-gap8-opponent-steady-01::lap-2",
+    "follow-gap8-opponent-steady-01::lap-20",
+    "follow-gap8-opponent-steady-01::lap-21",
+    "follow-gap8-opponent-steady-01::lap-22",
+    "follow-gap8-opponent-steady-01::lap-23",
+    "follow-gap8-opponent-steady-01::lap-24",
+    "follow-gap8-opponent-steady-01::lap-25",
+    "follow-gap8-opponent-steady-01::lap-26",
+    "follow-gap8-opponent-steady-01::lap-27",
+    "follow-gap8-opponent-steady-01::lap-28",
+    "follow-gap8-opponent-steady-01::lap-29",
+    "follow-gap8-opponent-steady-01::lap-3",
+    "follow-gap8-opponent-steady-01::lap-30",
+    "follow-gap8-opponent-steady-01::lap-31",
+    "follow-gap8-opponent-steady-01::lap-32",
+    "follow-gap8-opponent-steady-01::lap-33",
+    "follow-gap8-opponent-steady-01::lap-34",
+    "follow-gap8-opponent-steady-01::lap-35",
+    "follow-gap8-opponent-steady-01::lap-36",
+    "follow-gap8-opponent-steady-01::lap-37",
+    "follow-gap8-opponent-steady-01::lap-38",
+    "follow-gap8-opponent-steady-01::lap-39",
+    "follow-gap8-opponent-steady-01::lap-4",
+    "follow-gap8-opponent-steady-01::lap-40",
+    "follow-gap8-opponent-steady-01::lap-41",
+    "follow-gap8-opponent-steady-01::lap-42",
+    "follow-gap8-opponent-steady-01::lap-43",
+    "follow-gap8-opponent-steady-01::lap-44",
+    "follow-gap8-opponent-steady-01::lap-45",
+    "follow-gap8-opponent-steady-01::lap-46",
+    "follow-gap8-opponent-steady-01::lap-47",
+    "follow-gap8-opponent-steady-01::lap-48",
+    "follow-gap8-opponent-steady-01::lap-49",
+    "follow-gap8-opponent-steady-01::lap-5",
+    "follow-gap8-opponent-steady-01::lap-50",
+    "follow-gap8-opponent-steady-01::lap-51",
+    "follow-gap8-opponent-steady-01::lap-52",
+    "follow-gap8-opponent-steady-01::lap-53",
+    "follow-gap8-opponent-steady-01::lap-54",
+    "follow-gap8-opponent-steady-01::lap-55",
+    "follow-gap8-opponent-steady-01::lap-56",
+    "follow-gap8-opponent-steady-01::lap-6",
+    "follow-gap8-opponent-steady-01::lap-7",
+    "follow-gap8-opponent-steady-01::lap-8",
+    "follow-gap8-opponent-steady-01::lap-9"
+  ],
+  "episode_marker_diagnostics": {},
+  "input_rows": 49744,
+  "maneuver_counts": {
+    "follow": 49742
+  },
+  "recording_metadata": {
+    "ego_vehicle_id": "d1",
+    "expert_source": "mpc",
+    "maneuver_class": "follow",
+    "notes": "",
+    "opponent_behavior": "mpc",
+    "opponent_count": 3,
+    "provenance": {
+      "command_owner": "mpc_controller",
+      "command_snapshot_after": "Type: autoware_auto_control_msgs/msg/AckermannControlCommand\n\nPublisher count: 1\n\nNode name: mpc_controller\nNode namespace: /\nTopic type: autoware_auto_control_msgs/msg/AckermannControlCommand\nEndpoint type: PUBLISHER\nGID: 01.10.b4.42.c8.cd.e8.cb.c9.01.62.66.00.00.17.03.00.00.00.00.00.00.00.00\nQoS profile:\n  Reliability: RELIABLE\n  History (Depth): KEEP_LAST (1)\n  Durability: VOLATILE\n  Lifespan: Infinite\n  Deadline: Infinite\n  Liveliness: AUTOMATIC\n  Liveliness lease duration: Infinite\n\nSubscription count: 1\n\nNode name: awsim_d1\nNode namespace: /\nTopic type: autoware_auto_control_msgs/msg/AckermannControlCommand\nEndpoint type: SUBSCRIPTION\nGID: 01.10.4a.4c.ec.f6.de.a2.ff.c8.49.b0.00.00.27.04.00.00.00.00.00.00.00.00\nQoS profile:\n  Reliability: RELIABLE\n  History (Depth): KEEP_LAST (32)\n  Durability: VOLATILE\n  Lifespan: Infinite\n  Deadline: Infinite\n  Liveliness: AUTOMATIC\n  Liveliness lease duration: Infinite",
+      "command_snapshot_before": "Type: autoware_auto_control_msgs/msg/AckermannControlCommand\n\nPublisher count: 1\n\nNode name: mpc_controller\nNode namespace: /\nTopic type: autoware_auto_control_msgs/msg/AckermannControlCommand\nEndpoint type: PUBLISHER\nGID: 01.10.b4.42.c8.cd.e8.cb.c9.01.62.66.00.00.17.03.00.00.00.00.00.00.00.00\nQoS profile:\n  Reliability: RELIABLE\n  History (Depth): KEEP_LAST (1)\n  Durability: VOLATILE\n  Lifespan: Infinite\n  Deadline: Infinite\n  Liveliness: AUTOMATIC\n  Liveliness lease duration: Infinite\n\nSubscription count: 1\n\nNode name: awsim_d1\nNode namespace: /\nTopic type: autoware_auto_control_msgs/msg/AckermannControlCommand\nEndpoint type: SUBSCRIPTION\nGID: 01.10.4a.4c.ec.f6.de.a2.ff.c8.49.b0.00.00.27.04.00.00.00.00.00.00.00.00\nQoS profile:\n  Reliability: RELIABLE\n  History (Depth): KEEP_LAST (32)\n  Durability: VOLATILE\n  Lifespan: Infinite\n  Deadline: Infinite\n  Liveliness: AUTOMATIC\n  Liveliness lease duration: Infinite",
+      "command_topic": "/control/command/control_cmd",
+      "episode_control_topic": "/racing_maneuver/episode_control",
+      "episode_markers_required": false,
+      "ros_domain_id": 1,
+      "v2x_required": true
+    },
+    "recording_id": "20260827-114404-d6cb0e3d",
+    "scenario_id": "follow-gap8-opponent-steady-01",
+    "schema_version": 1,
+    "seed": 1
+  },
+  "rejected_reasons": {
+    "stale_or_missing_source": 2
+  },
+  "rejected_rows": 2,
+  "schema_version": 1,
+  "source_age_distributions_s": {
+    "max": [
+      0.044999998062849045,
+      0.03999999910593033,
+      0.03999999910593033,
+      0.029999999329447746,
+      0.029999999329447746,
+      0.08446375280618668
+    ],
+    "mean": [
+      0.02098231576383114,
+      0.004946720786392689,
+      0.004946720786392689,
+      0.015033302828669548,
+      0.015033302828669548,
+      0.03188358247280121
+    ]
+  },
+  "source_order": [
+    "scan",
+    "odom",
+    "acceleration",
+    "steering",
+    "mode",
+    "v2x"
+  ],
+  "timestamp_policy": "ROS source stamps; latest-at-or-before causal joins; episode-control events map from rosbag receive time to the latest causal /clock"
+}

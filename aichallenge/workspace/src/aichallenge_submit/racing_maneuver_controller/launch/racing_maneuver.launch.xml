@@ -1,0 +1,18 @@
+<launch>
+  <arg name="use_sim_time" default="true"/>
+  <arg name="controller_param" default="$(find-pkg-share racing_maneuver_controller)/config/racing_maneuver_controller.param.yaml"/>
+  <arg name="model_path" default=""/>
+  <arg name="publish_commands" default="false"/>
+  <arg name="control_cmd_topic" default="/control/command/control_cmd"/>
+
+  <node pkg="racing_maneuver_controller"
+        exec="racing_maneuver_controller_node"
+        name="racing_maneuver_controller"
+        output="screen">
+    <param from="$(var controller_param)"/>
+    <param name="model_path" value="$(var model_path)"/>
+    <param name="publish_commands" value="$(var publish_commands)"/>
+    <param name="control_cmd_topic" value="$(var control_cmd_topic)"/>
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+  </node>
+</launch>

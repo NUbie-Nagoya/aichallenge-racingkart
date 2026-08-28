@@ -1,0 +1,33 @@
+/**:
+  ros__parameters:
+    # Shadow-only unless an operator explicitly overrides this launch-visible gate.
+    publish_commands: false
+    model_path: ""
+    ego_vehicle_id: "d1"
+
+    control_cmd_topic: "/control/command/control_cmd"
+    debug_control_topic: "/racing_maneuver/debug/control_cmd"
+    debug_features_topic: "/racing_maneuver/debug/features"
+    debug_safety_topic: "/racing_maneuver/debug/safety_status"
+
+    # Real actuation is intentionally narrower than shadow observation.
+    allowed_control_modes: [1]
+    shadow_allowed_control_modes: [1, 4]
+
+    rate_hz: 20.0
+    scan_maximum_age_ms: 100.0
+    ego_maximum_age_ms: 100.0
+    v2x_maximum_age_ms: 250.0
+    control_mode_maximum_age_ms: 500.0
+
+    canonical_angle_min_rad: -1.562069680534925
+    canonical_angle_max_rad: 1.562069680534925
+    lidar_model_max_range_m: 30.0
+    maximum_pose_jump_m: 3.0
+    steering_limit_rad: 1.0
+    acceleration_limit_mps2: 3.0
+    steering_rate_limit_rad_s: 1.5
+    acceleration_rate_limit_mps3: 4.0
+    command_steering_rotation_rate_rad_s: 1.5
+    v2x_maximum_speed_mps: 50.0
+    opponent_forward_corridor_half_width_m: 5.0

@@ -14,6 +14,7 @@
 //   a / d : steer left / right             (held -> steer axis +1 / -1)
 //   1 / 2 : gear DRIVE / REVERSE            (pulse on press)
 //   b     : turbo boost                     (pulse on press)
+//   F9/F10/F11: START / STOP / DISCARD dataset episode (pulse on press)
 
 #include <algorithm>
 #include <chrono>
@@ -22,6 +23,7 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/joy.hpp"
+#include "std_msgs/msg/string.hpp"
 
 // X11 headers define macros (None, Status, Bool, ...) that corrupt the parsing
 // of ROS headers, so include them LAST, after rclcpp/sensor_msgs are parsed.
@@ -49,6 +51,8 @@ public:
                            reverse_button_index_, boost_button_index_}) + 1;
 
     joy_pub_ = create_publisher<sensor_msgs::msg::Joy>("/joy", 10);
+    episode_control_pub_ = create_publisher<std_msgs::msg::String>(
+      "/racing_maneuver/episode_control", 10);
 
     display_ = XOpenDisplay(nullptr);
     if (!display_) {
@@ -62,9 +66,12 @@ public:
       kc_1_ = XKeysymToKeycode(display_, XK_1);
       kc_2_ = XKeysymToKeycode(display_, XK_2);
       kc_b_ = XKeysymToKeycode(display_, XK_b);
+      kc_f9_ = XKeysymToKeycode(display_, XK_F9);
+      kc_f10_ = XKeysymToKeycode(display_, XK_F10);
+      kc_f11_ = XKeysymToKeycode(display_, XK_F11);
       RCLCPP_INFO(get_logger(),
         "keyboard_x11_to_joy started on display '%s'. "
-        "Keys: w/s accel, a/d steer, 1/2 gear D/R, b boost.",
+        "Keys: w/s accel, a/d steer, 1/2 gear D/R, b boost, F9/F10/F11 episode markers.",
         XDisplayString(display_));
     }
 
@@ -107,9 +114,23 @@ private:
       pulse_on_edge(pressed(keys, kc_1_), prev_1_, drive_button_index_, joy);
       pulse_on_edge(pressed(keys, kc_2_), prev_2_, reverse_button_index_, joy);
       pulse_on_edge(pressed(keys, kc_b_), prev_b_, boost_button_index_, joy);
+      publish_marker_on_edge(pressed(keys, kc_f9_), prev_f9_, "START");
+      publish_marker_on_edge(pressed(keys, kc_f10_), prev_f10_, "STOP");
+      publish_marker_on_edge(pressed(keys, kc_f11_), prev_f11_, "DISCARD");
     }
 
     joy_pub_->publish(joy);
+  }
+
+  void publish_marker_on_edge(bool now_pressed, bool & prev, const char * event)
+  {
+    if (now_pressed && !prev) {
+      std_msgs::msg::String marker;
+      marker.data = event;
+      episode_control_pub_->publish(marker);
+      RCLCPP_INFO(get_logger(), "Dataset episode marker: %s", event);
+    }
+    prev = now_pressed;
   }
 
   void pulse_on_edge(bool now_pressed, bool & prev, int button_index,
@@ -130,9 +151,12 @@ private:
   // X11
   Display * display_{nullptr};
   KeyCode kc_w_{0}, kc_s_{0}, kc_a_{0}, kc_d_{0}, kc_1_{0}, kc_2_{0}, kc_b_{0};
+  KeyCode kc_f9_{0}, kc_f10_{0}, kc_f11_{0};
   bool prev_1_{false}, prev_2_{false}, prev_b_{false};
+  bool prev_f9_{false}, prev_f10_{false}, prev_f11_{false};
 
   rclcpp::Publisher<sensor_msgs::msg::Joy>::SharedPtr joy_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr episode_control_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
 

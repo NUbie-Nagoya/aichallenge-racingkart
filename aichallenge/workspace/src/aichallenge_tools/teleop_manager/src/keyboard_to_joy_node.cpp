@@ -16,6 +16,7 @@
 //   a / d : steer left / right             (held -> steer axis +1 / -1)
 //   1 / 2 : gear DRIVE / REVERSE            (pulse on press)
 //   b     : turbo boost                     (pulse on press)
+//   F9/F10/F11: START / STOP / DISCARD dataset episode (pulse on press)
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -32,6 +33,7 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/joy.hpp"
+#include "std_msgs/msg/string.hpp"
 
 namespace
 {
@@ -67,6 +69,8 @@ public:
                            reverse_button_index_, boost_button_index_}) + 1;
 
     joy_pub_ = create_publisher<sensor_msgs::msg::Joy>("/joy", 10);
+    episode_control_pub_ = create_publisher<std_msgs::msg::String>(
+      "/racing_maneuver/episode_control", 10);
 
     open_device();
 
@@ -150,6 +154,14 @@ private:
     joy_pub_->publish(joy);
   }
 
+  void publish_episode_control(const char * event)
+  {
+    std_msgs::msg::String marker;
+    marker.data = event;
+    episode_control_pub_->publish(marker);
+    RCLCPP_INFO(get_logger(), "Dataset episode marker: %s", event);
+  }
+
   void read_events()
   {
     if (fd_ < 0) return;
@@ -165,6 +177,9 @@ private:
         case KEY_1: if (ev.value == 1) pulse_buttons_.push_back(drive_button_index_); break;
         case KEY_2: if (ev.value == 1) pulse_buttons_.push_back(reverse_button_index_); break;
         case KEY_B: if (ev.value == 1) pulse_buttons_.push_back(boost_button_index_); break;
+        case KEY_F9: if (ev.value == 1) publish_episode_control("START"); break;
+        case KEY_F10: if (ev.value == 1) publish_episode_control("STOP"); break;
+        case KEY_F11: if (ev.value == 1) publish_episode_control("DISCARD"); break;
         default: break;
       }
     }
@@ -182,6 +197,7 @@ private:
   std::vector<int> pulse_buttons_;
 
   rclcpp::Publisher<sensor_msgs::msg::Joy>::SharedPtr joy_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr episode_control_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
   int fd_{-1};
 };

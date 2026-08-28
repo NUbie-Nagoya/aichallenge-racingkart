@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "racing-maneuver-il"
+version = "0.1.0"
+description = "Standalone temporal imitation-learning pipeline for racing maneuvers"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "torch>=1.8",
+  "PyYAML>=6",
+  "rosbags>=0.9",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+racing-maneuver-extract = "racing_maneuver_il.extract_dataset:main"
+racing-maneuver-merge = "racing_maneuver_il.merge_datasets:main"
+racing-maneuver-inspect-scan = "racing_maneuver_il.inspect_scan_contract:main"
+racing-maneuver-train = "racing_maneuver_il.train:main"
+racing-maneuver-evaluate = "racing_maneuver_il.evaluate:main"
+racing-maneuver-export = "racing_maneuver_il.export_torchscript:main"
+
+[tool.setuptools.packages.find]
+include = ["racing_maneuver_il*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = [
+  "ignore:`torch.jit.*:DeprecationWarning",
+  "ignore:CUDA initialization.*:UserWarning",
+]

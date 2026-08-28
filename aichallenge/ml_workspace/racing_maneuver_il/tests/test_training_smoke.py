@@ -77,6 +77,31 @@ def test_deterministic_synthetic_smoke_training_and_evaluation(tmp_path):
         run_evaluation(output / "best.pt", different_dataset, output / "invalid.json")
 
 
+def test_training_reports_epoch_progress_with_tqdm(monkeypatch, tmp_path):
+    dataset = tmp_path / "data.npz"
+    output = tmp_path / "run"
+    make_dataset(dataset)
+    calls = []
+
+    class Progress:
+        def __init__(self, iterable, **kwargs):
+            calls.append(kwargs)
+            self.iterable = iterable
+
+        def __iter__(self):
+            return iter(self.iterable)
+
+        def set_postfix(self, **kwargs):
+            calls[-1]["postfix"] = kwargs
+
+    monkeypatch.setattr("racing_maneuver_il.train.tqdm", Progress)
+    run_training(config(dataset, output))
+
+    assert calls[0]["desc"] == "Epoch 1/1"
+    assert calls[0]["total"] > 0
+    assert "loss" in calls[0]["postfix"]
+
+
 def test_train_cli_reads_yaml(tmp_path):
     dataset = tmp_path / "data.npz"
     output = tmp_path / "run"

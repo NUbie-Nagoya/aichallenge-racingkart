@@ -13,6 +13,7 @@ import torch
 import yaml
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 from .checkpoint import save_checkpoint
 from .dataset import FrameData, TemporalDataset, grouped_split, save_split_manifest
@@ -157,7 +158,13 @@ def run_training(config: dict) -> dict:
     for epoch in range(epochs):
         model.train()
         losses = []
-        for lidar_batch, aux_batch, target, meta in train_loader:
+        progress = tqdm(
+            train_loader,
+            desc=f"Epoch {epoch + 1}/{epochs}",
+            total=len(train_loader),
+            unit="batch",
+        )
+        for lidar_batch, aux_batch, target, meta in progress:
             optimizer.zero_grad()
             normalized, _ = model(lidar_batch, aux_batch)
             prediction = _physical(normalized, low, high)
@@ -170,6 +177,7 @@ def run_training(config: dict) -> dict:
             loss.backward()
             optimizer.step()
             losses.append(float(loss.detach()))
+            progress.set_postfix(loss=f"{losses[-1]:.4f}")
         model.eval()
         predictions = []
         targets = []

@@ -65,6 +65,18 @@ def _required(config: dict, key: str):
     return config[key]
 
 
+def _resolve_device(requested: str) -> torch.device:
+    if requested == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if requested == "cuda":
+        if not torch.cuda.is_available():
+            raise ValueError("CUDA is unavailable; install a CUDA-enabled PyTorch build or use device: cpu")
+        return torch.device("cuda")
+    if requested == "cpu":
+        return torch.device("cpu")
+    raise ValueError("device must be one of: auto, cpu, cuda")
+
+
 def run_training(config: dict) -> dict:
     config = dict(config)
     seed = int(config.get("seed", 0))
@@ -72,13 +84,14 @@ def run_training(config: dict) -> dict:
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.set_num_threads(int(config.get("torch_threads", 1)))
+    device = _resolve_device(str(config.get("device", "cpu")))
     dataset_path = Path(_required(config, "dataset"))
     output = Path(_required(config, "output_dir"))
     output.mkdir(parents=True, exist_ok=True)
     frames = FrameData.from_npz(dataset_path)
     limits = _required(config, "action_limits")
-    low = torch.tensor(limits["low"], dtype=torch.float32)
-    high = torch.tensor(limits["high"], dtype=torch.float32)
+    low = torch.tensor(limits["low"], dtype=torch.float32, device=device)
+    high = torch.tensor(limits["high"], dtype=torch.float32, device=device)
     if (
         low.shape != (2,)
         or high.shape != (2,)
@@ -89,7 +102,7 @@ def run_training(config: dict) -> dict:
         raise ValueError(
             "action_limits must contain two finite ordered low/high values"
         )
-    targets = torch.as_tensor(frames.targets)
+    targets = torch.as_tensor(frames.targets, device=device)
     outside = torch.any((targets < low) | (targets > high), dim=1)
     if torch.any(outside):
         raise ValueError(
@@ -128,7 +141,7 @@ def run_training(config: dict) -> dict:
         validation_data, batch_size=batch_size, shuffle=False
     )
     model_config = dict(config.get("model", {}))
-    model = TemporalPolicy(**model_config)
+    model = TemporalPolicy(**model_config).to(device)
     optimizer = torch.optim.Adam(
         model.parameters(), lr=float(config.get("learning_rate", 1e-3))
     )
@@ -165,6 +178,9 @@ def run_training(config: dict) -> dict:
             unit="batch",
         )
         for lidar_batch, aux_batch, target, meta in progress:
+            lidar_batch = lidar_batch.to(device)
+            aux_batch = aux_batch.to(device)
+            target = target.to(device)
             optimizer.zero_grad()
             normalized, _ = model(lidar_batch, aux_batch)
             prediction = _physical(normalized, low, high)
@@ -184,8 +200,10 @@ def run_training(config: dict) -> dict:
         maneuvers = []
         with torch.no_grad():
             for lidar_batch, aux_batch, target, meta in validation_loader:
+                lidar_batch = lidar_batch.to(device)
+                aux_batch = aux_batch.to(device)
                 normalized, _ = model(lidar_batch, aux_batch)
-                predictions.append(_physical(normalized, low, high).numpy())
+                predictions.append(_physical(normalized, low, high).cpu().numpy())
                 targets.append(target.numpy())
                 maneuvers.extend(meta["maneuver_class"])
         prediction_array = np.concatenate(predictions)

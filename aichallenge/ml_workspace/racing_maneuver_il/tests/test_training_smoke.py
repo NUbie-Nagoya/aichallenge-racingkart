@@ -6,8 +6,8 @@ import pytest
 import yaml
 
 from racing_maneuver_il.evaluate import run_evaluation
+from racing_maneuver_il.train import _resolve_device, run_training
 from racing_maneuver_il.train import main as train_main
-from racing_maneuver_il.train import run_training
 
 
 def make_dataset(path: Path):
@@ -44,6 +44,12 @@ def config(dataset, output):
         "action_limits": {"low": [-0.5, -3.0], "high": [0.5, 2.0]},
         "loss_weights": {"steering": 1.0, "longitudinal": 1.0, "action_change": 0.05},
     }
+
+
+def test_cuda_device_requires_an_available_cuda_runtime(monkeypatch):
+    monkeypatch.setattr("racing_maneuver_il.train.torch.cuda.is_available", lambda: False)
+    with pytest.raises(ValueError, match="CUDA is unavailable"):
+        _resolve_device("cuda")
 
 
 def test_deterministic_synthetic_smoke_training_and_evaluation(tmp_path):

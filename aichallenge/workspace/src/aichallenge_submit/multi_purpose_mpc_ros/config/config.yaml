@@ -62,3 +62,16 @@ v2x_obstacle_avoidance:
   vehicle_radius: 0.5
 waypoints:
   csv_path: ''
+
+
+frenet:
+  enabled: true
+  reprojection_rate_hz: 10
+  lane_margin: 1.0
+  lateral_offsets: [1.2, 1.5]
+  T_overtake: [1.5,2.0,2.5,3.0]
+  T_return: [1.5,2.0,2.5]
+  clearance: 1.5
+  ttc_thr: 1.5
+  gap0: 2.0
+  gap_t: 0.8

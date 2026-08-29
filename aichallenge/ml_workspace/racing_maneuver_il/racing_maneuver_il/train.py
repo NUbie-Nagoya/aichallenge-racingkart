@@ -6,8 +6,6 @@ import argparse
 import hashlib
 import json
 import random
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -81,10 +79,19 @@ def _resolve_device(requested: str) -> torch.device:
 
 def _create_run_directory(output_root: Path) -> Path:
     output_root.mkdir(parents=True, exist_ok=True)
-    run_id = datetime.now(timezone.utc).strftime("run-%Y%m%dT%H%M%SZ")
-    destination = output_root / f"{run_id}-{uuid.uuid4().hex[:8]}"
-    destination.mkdir()
-    return destination
+    existing = [
+        int(path.name.removeprefix("run-"))
+        for path in output_root.iterdir()
+        if path.is_dir() and path.name.removeprefix("run-").isdigit()
+    ]
+    run_number = max(existing, default=0) + 1
+    while True:
+        destination = output_root / f"run-{run_number}"
+        try:
+            destination.mkdir()
+            return destination
+        except FileExistsError:
+            run_number += 1
 
 
 def run_training(config: dict) -> dict:

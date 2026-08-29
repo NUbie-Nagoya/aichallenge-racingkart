@@ -61,6 +61,8 @@ def test_training_creates_distinct_run_directories(tmp_path):
     second = run_training(config(dataset, output_root))
 
     assert first["output_dir"] != second["output_dir"]
+    assert Path(first["output_dir"]).name == "run-1"
+    assert Path(second["output_dir"]).name == "run-2"
     assert Path(first["output_dir"]).parent == output_root
     assert Path(second["output_dir"]).parent == output_root
     assert (Path(first["output_dir"]) / "best.pt").is_file()

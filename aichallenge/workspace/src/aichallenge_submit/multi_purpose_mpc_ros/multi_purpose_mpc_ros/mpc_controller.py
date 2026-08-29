@@ -11,6 +11,9 @@ import os
 import shutil
 from datetime import datetime
 
+from multi_purpose_mpc_ros.core.frenet_converter import FrenetConverter
+from multi_purpose_mpc_ros.core.frenet_planner import FrenetPlanner, FrenetCfg
+
 # ROS 2
 import rclpy
 from rclpy.node import Node
@@ -440,6 +443,14 @@ class MPCController(Node):
         self._mpc_cfg, self._mpc = create_mpc(self._car)
         compute_speed_profile(self._car, self._mpc_cfg)
 
+        # Add frenet converter and planner, with cfg
+        self._frenet_converter = FrenetConverter(self._reference_path)
+        self._reference_path_global = self._reference_path
+        frenet_cfg_raw = self._cfg.frenet 
+        frenet_cfg = FrenetCfg(**{k: v for k,v in frenet_cfg_raw._asdict().items() if k in FrenetCfg.__dataclass_fields__})
+        self._frenet_planner = FrenetPlanner(self._frenet_converter, self._map, self._mpc_cfg, frenet_cfg)
+        self._frenet_override = None
+
         self._ref_vel_configulator: Optional[ReferenceVelocityConfigulator] = create_ref_vel_configulator()
 
         self._trajectory: Optional[Trajectory] = None
@@ -511,6 +522,7 @@ class MPCController(Node):
             MarkerArray, "/mpc/prediction", 1)
         self._mpc_pred_pub_dummy = self.create_publisher(
             MarkerArray, "/planning/scenario_planning/lane_driving/motion_planning/obstacle_stop_planner/virtual_wall", 1)
+        self._frenet_pub = self.create_publisher(MarkerArray, "/mpc/frenet_candidate",1)
 
         latching_qos = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
         # NOTE:評価環境での可視化のためにダミーのトピック名を使用
@@ -705,6 +717,26 @@ class MPCController(Node):
         self._mpc_pred_pub.publish(pred_marker_array)
         self._mpc_pred_pub_dummy.publish(pred_marker_array)
 
+    def _publish_mpc_frenet_marker(self, x_frenet, y_frenet):
+        pred_marker_array = MarkerArray()
+        m_base = Marker()
+        m_base.header.frame_id = "map"
+        m_base.ns = "mpc_frenet"
+        m_base.type = Marker.SPHERE
+        m_base.action = Marker.ADD
+        m_base.pose.position.z = 0.0
+        m_base.scale = Vector3(x=0.5, y=0.5, z=0.5)
+        # set color for frenet marker
+        m_base.color = YELLOW
+        for i in range(len(x_frenet)):
+            m = copy.deepcopy(m_base)
+            m.id = i
+            m.pose.position.x = x_frenet[i]
+            m.pose.position.y = y_frenet[i]
+            pred_marker_array.markers.append(m) # type: ignore
+        self._mpc_pred_pub.publish(pred_marker_array)
+        self._mpc_pred_pub_dummy.publish(pred_marker_array)
+
     def _publish_ref_path_marker(self, ref_path: ReferencePath):
         WP_SPHERE_ENABLED = False
 
@@ -805,6 +837,15 @@ class MPCController(Node):
         # print(f"mpc x: {self._mpc.model.temporal_state.x}, y: {self._mpc.model.temporal_state.y}, psi: {self._mpc.model.temporal_state.psi}")
 
         with self._stats.time_block("control"):
+            if hasattr(self,'_frenet_planner') and self._cfg.frenet.enabled and self._odom:
+                if self._loop % max(1,int(self._mpc_cfg.control_rate//self._cfg.frenet.reprojection_rate_hz))==0:
+                    cand = self._frenet_planner.update(pose, v, self._static_obstacles+self._dynamic_obstacles, self._car)
+                    if cand:
+                        local = cand.to_reference_path(self._map, 0.6, False)
+                        local.compute_speed_profile({"a_min":self._mpc_cfg.a_min,"a_max":self._mpc_cfg.a_max,"v_min":0,"v_max":self._mpc_cfg.v_max,"ay_max":self._mpc_cfg.ay_max})
+                        self._frenet_override=local; self._car.reference_path=local; self._car.update_reference_path(local)
+                    elif self._frenet_override and self._frenet_planner.state.name=="IDLE" and abs(self._frenet_converter.cartesian_to_frenet(pose.x,pose.y)[1])<0.3:
+                        self._car.reference_path=self._reference_path_global; self._car.update_reference_path(self._reference_path_global); self._frenet_override=None
             u, max_delta = self._mpc.get_control()
             # self.get_logger().info(f"u: {u}")
 

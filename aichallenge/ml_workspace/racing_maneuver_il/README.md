@@ -85,7 +85,8 @@ pip install -e .
 python -m racing_maneuver_il.train config/train_mpc_within_session.yaml
 ```
 
-Outputs are written to `runs/mpc-within-session-20260827-114404/`. This split keeps
+Outputs are written to a new timestamp-and-UUID directory under
+`runs/mpc-within-session-20260827-114404/` for every invocation. This split keeps
 complete laps disjoint, but every lap comes from one recording, scenario, seed, and
 MPC configuration. Treat its validation/test metrics only as **within-session MPC
 imitation** metrics—not cross-scenario or deployment-quality evidence.

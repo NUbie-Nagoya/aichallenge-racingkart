@@ -52,6 +52,21 @@ def test_cuda_device_requires_an_available_cuda_runtime(monkeypatch):
         _resolve_device("cuda")
 
 
+def test_training_creates_distinct_run_directories(tmp_path):
+    dataset = tmp_path / "data.npz"
+    output_root = tmp_path / "runs"
+    make_dataset(dataset)
+
+    first = run_training(config(dataset, output_root))
+    second = run_training(config(dataset, output_root))
+
+    assert first["output_dir"] != second["output_dir"]
+    assert Path(first["output_dir"]).parent == output_root
+    assert Path(second["output_dir"]).parent == output_root
+    assert (Path(first["output_dir"]) / "best.pt").is_file()
+    assert (Path(second["output_dir"]) / "best.pt").is_file()
+
+
 def test_deterministic_synthetic_smoke_training_and_evaluation(tmp_path):
     dataset = tmp_path / "data.npz"
     output = tmp_path / "run"
@@ -66,11 +81,14 @@ def test_deterministic_synthetic_smoke_training_and_evaluation(tmp_path):
         "curves.json",
         "validation_metrics.json",
     }
-    assert required.issubset({p.name for p in output.iterdir()})
+    run_output = Path(result["output_dir"])
+    assert required.issubset({p.name for p in run_output.iterdir()})
     assert result["best_epoch"] == 0
-    report = run_evaluation(output / "best.pt", dataset, output / "evaluation.json")
+    report = run_evaluation(
+        run_output / "best.pt", dataset, run_output / "evaluation.json"
+    )
     assert set(report) == {"teacher_forced", "autoregressive"}
-    assert json.loads((output / "evaluation.json").read_text()) == report
+    assert json.loads((run_output / "evaluation.json").read_text()) == report
 
     different_dataset = tmp_path / "different.npz"
     make_dataset(different_dataset)
@@ -80,7 +98,7 @@ def test_deterministic_synthetic_smoke_training_and_evaluation(tmp_path):
     changed["targets"][0, 0] += 0.01
     np.savez_compressed(different_dataset, **changed)
     with pytest.raises(ValueError, match="provenance"):
-        run_evaluation(output / "best.pt", different_dataset, output / "invalid.json")
+        run_evaluation(run_output / "best.pt", different_dataset, run_output / "invalid.json")
 
 
 def test_training_reports_epoch_progress_with_tqdm(monkeypatch, tmp_path):
@@ -115,4 +133,4 @@ def test_train_cli_reads_yaml(tmp_path):
     config_path = tmp_path / "train.yaml"
     config_path.write_text(yaml.safe_dump(config(dataset, output)))
     train_main([str(config_path)])
-    assert (output / "last.pt").exists()
+    assert len(list(output.glob("run-*/last.pt"))) == 1

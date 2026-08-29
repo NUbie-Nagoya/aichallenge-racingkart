@@ -6,6 +6,8 @@ import argparse
 import hashlib
 import json
 import random
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -77,6 +79,14 @@ def _resolve_device(requested: str) -> torch.device:
     raise ValueError("device must be one of: auto, cpu, cuda")
 
 
+def _create_run_directory(output_root: Path) -> Path:
+    output_root.mkdir(parents=True, exist_ok=True)
+    run_id = datetime.now(timezone.utc).strftime("run-%Y%m%dT%H%M%SZ")
+    destination = output_root / f"{run_id}-{uuid.uuid4().hex[:8]}"
+    destination.mkdir()
+    return destination
+
+
 def run_training(config: dict) -> dict:
     config = dict(config)
     seed = int(config.get("seed", 0))
@@ -86,8 +96,7 @@ def run_training(config: dict) -> dict:
     torch.set_num_threads(int(config.get("torch_threads", 1)))
     device = _resolve_device(str(config.get("device", "cpu")))
     dataset_path = Path(_required(config, "dataset"))
-    output = Path(_required(config, "output_dir"))
-    output.mkdir(parents=True, exist_ok=True)
+    output = _create_run_directory(Path(_required(config, "output_dir")))
     frames = FrameData.from_npz(dataset_path)
     limits = _required(config, "action_limits")
     low = torch.tensor(limits["low"], dtype=torch.float32, device=device)

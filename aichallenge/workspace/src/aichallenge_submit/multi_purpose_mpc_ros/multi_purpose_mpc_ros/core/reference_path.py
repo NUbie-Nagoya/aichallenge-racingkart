@@ -239,7 +239,7 @@ class ReferencePath:
         for wp, v in zip(self.waypoints, self.waypoint_velocities):
             wp.v_ref = v
 
-    def _construct_path(self, wp_x, wp_y, wp_vx):
+    def _construct_path(self, wp_x, wp_y, wp_vx: Optional[List[float]] = None):
         """
         Construct path from given waypoints.
         :param wp_x: x coordinates of waypoints in global coordinates
@@ -252,7 +252,8 @@ class ReferencePath:
             # FIXME: コースを循環させるときに始点と終点にギャップができないように要素を追加している。しかし、 smoothing_distance に応じて追加要素数を調整する必要があり、マジックナンバーが存在している
             wp_x = wp_x + wp_x[:self.smoothing_distance * 3]
             wp_y = wp_y + wp_y[:self.smoothing_distance * 3]
-            wp_vx = wp_vx + wp_vx[:self.smoothing_distance * 3]
+            if wp_vx is not None:
+                wp_vx = wp_vx + wp_vx[:self.smoothing_distance * 3]
 
         # Number of waypoints
         n_wp = [max(1, int(np.sqrt((wp_x[i + 1] - wp_x[i]) ** 2 +
@@ -260,16 +261,19 @@ class ReferencePath:
                 self.resolution)) for i in range(len(wp_x) - 1)]
 
         # Construct waypoints with specified resolution
-        gp_x, gp_y, gp_vx = wp_x[-1], wp_y[-1], wp_vx[-1]
+        gp_x, gp_y = wp_x[-1], wp_y[-1]
+        if wp_vx is not None:
+            gp_vx= wp_vx[-1]
         wp_x = [np.linspace(wp_x[i], wp_x[i+1], n_wp[i], endpoint=False).
                     tolist() for i in range(len(wp_x)-1)]
         wp_x = [wp for segment in wp_x for wp in segment] + [gp_x]
         wp_y = [np.linspace(wp_y[i], wp_y[i + 1], n_wp[i], endpoint=False).
                     tolist() for i in range(len(wp_y) - 1)]
         wp_y = [wp for segment in wp_y for wp in segment] + [gp_y]
-        wp_vx = [np.linspace(wp_vx[i], wp_vx[i + 1], n_wp[i], endpoint=False).
-                    tolist() for i in range(len(wp_vx) - 1)]
-        wp_vx = [wp for segment in wp_vx for wp in segment] + [gp_vx]
+        if wp_vx is not None:
+            wp_vx = [np.linspace(wp_vx[i], wp_vx[i + 1], n_wp[i], endpoint=False).
+                        tolist() for i in range(len(wp_vx) - 1)]
+            wp_vx = [wp for segment in wp_vx for wp in segment] + [gp_vx]
 
         # Smooth path
         wp_xs = []
@@ -281,8 +285,13 @@ class ReferencePath:
                                             + self.smoothing_distance + 1]))
             wp_ys.append(np.mean(wp_y[wp_id - self.smoothing_distance:wp_id
                                             + self.smoothing_distance + 1]))
-            waypoint_velocities.append(np.mean(wp_vx[wp_id - self.smoothing_distance:wp_id
+            if wp_vx is not None:
+                waypoint_velocities.append(np.mean(wp_vx[wp_id - self.smoothing_distance:wp_id
                                             + self.smoothing_distance + 1]))
+            else: 
+                # return const value
+                waypoint_velocities.append(5)
+
         # Construct list of waypoint objects
         waypoints = list(zip(wp_xs, wp_ys))
         # print(f"n_wp: {n_wp}, smooth_dist: {self.smoothing_distance}, len(wp_x): {len(wp_x)}, len way: {len(waypoints)}")

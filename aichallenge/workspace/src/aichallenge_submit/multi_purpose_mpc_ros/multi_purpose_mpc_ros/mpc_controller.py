@@ -456,7 +456,9 @@ class MPCController(Node):
         self._trajectory: Optional[Trajectory] = None
         self._path_constraints = None
 
-        # Obstacles
+        # Obstacles – OA and Frenet-alone both need V2X/empty lists
+        # Keep original OA path, but also support frenet-alone (OA false + frenet true)
+        frenet_enabled = hasattr(self._cfg, 'frenet') and bool(getattr(self._cfg.frenet, 'enabled', False))
         if self.USE_OBSTACLE_AVOIDANCE:
             self._static_obstacles: List[Obstacle] = create_obstacles()
             self._dynamic_obstacles: List[Obstacle] = []
@@ -482,6 +484,40 @@ class MPCController(Node):
             wps = self._reference_path.waypoints
             self._waypoint_xy = np.asarray(
                 [(wp.x, wp.y) for wp in wps], dtype=np.float64)
+        elif frenet_enabled:
+            # Frenet-alone: V2X dynamic only, Map stays clean (no add_obstacles)
+            self._static_obstacles: List[Obstacle] = create_obstacles()
+            self._dynamic_obstacles: List[Obstacle] = []
+            self._obstacles_updated = False
+            v2x_cfg = self._cfg.v2x_obstacle_avoidance  # type: ignore
+            self._v2x_tracker = V2XVehicleTracker(
+                v_max_safety=float(v2x_cfg.v_max_safety),
+                position_jump_threshold=float(v2x_cfg.position_jump_threshold),
+                warn_callback=self.get_logger().warn,
+            )
+            self._v2x_vehicle_radius = float(v2x_cfg.vehicle_radius)
+            mpc_N = int(self._cfg.mpc.N)  # type: ignore
+            t_horizon = mpc_N / float(self._cfg.mpc.control_rate)  # type: ignore
+            self._v2x_t_samples = [
+                k * t_horizon / max(mpc_N - 1, 1) for k in range(mpc_N)
+            ]
+            ref_max_width = float(self._cfg.reference_path.max_width)  # type: ignore
+            self._v2x_corridor_threshold_sq = (
+                ref_max_width / 2.0 + self._v2x_vehicle_radius + 0.5
+            ) ** 2
+            wps = self._reference_path.waypoints
+            self._waypoint_xy = np.asarray(
+                [(wp.x, wp.y) for wp in wps], dtype=np.float64)
+        else:
+            # No OA, no frenet – empty
+            self._static_obstacles: List[Obstacle] = []
+            self._dynamic_obstacles: List[Obstacle] = []
+            self._obstacles_updated = False
+            self._v2x_tracker = None  # type: ignore
+            self._v2x_vehicle_radius = 0.5
+            self._v2x_t_samples = []
+            self._v2x_corridor_threshold_sq = 0.0
+            self._waypoint_xy = np.asarray([], dtype=np.float64)
 
         # Laps
         self._current_laps = 1
@@ -563,6 +599,9 @@ class MPCController(Node):
                 self._border_cells_sub = self.create_subscription(
                     BorderCells, "/path_constraints_provider/border_cells", self._border_cells_callback, 1)
 
+        # V2X for OA or Frenet-alone (OA false + frenet true)
+        frenet_enabled_for_v2x = hasattr(self._cfg, 'frenet') and bool(getattr(self._cfg.frenet, 'enabled', False))
+        if self.USE_OBSTACLE_AVOIDANCE or frenet_enabled_for_v2x:
             self._v2x_sub = self.create_subscription(
                 V2XVehiclePositionArray,
                 "/v2x/vehicle_positions",
@@ -609,6 +648,8 @@ class MPCController(Node):
             msg.upper_bounds, msg.lower_bounds, msg.rows, msg.cols)
 
     def _v2x_callback(self, msg: V2XVehiclePositionArray) -> None:
+        if self._v2x_tracker is None:
+            return
         self._v2x_tracker.update(msg)
         predictions = self._v2x_tracker.predict_all(self._v2x_t_samples)
         self._dynamic_obstacles = predictions_to_obstacles(
@@ -839,10 +880,19 @@ class MPCController(Node):
         with self._stats.time_block("control"):
             if hasattr(self,'_frenet_planner') and self._cfg.frenet.enabled and self._odom:
                 if self._loop % max(1,int(self._mpc_cfg.control_rate//self._cfg.frenet.reprojection_rate_hz))==0:
-                    cand = self._frenet_planner.update(pose, v, self._static_obstacles+self._dynamic_obstacles, self._car)
+                    frenet_obs = getattr(self, '_static_obstacles', []) + getattr(self, '_dynamic_obstacles', [])
+                    cand = self._frenet_planner.update(pose, v, frenet_obs, self._car)
                     if cand:
                         local = cand.to_reference_path(self._map, 0.6, False)
                         local.compute_speed_profile({"a_min":self._mpc_cfg.a_min,"a_max":self._mpc_cfg.a_max,"v_min":0,"v_max":self._mpc_cfg.v_max,"ay_max":self._mpc_cfg.ay_max})
+                        # Frenet-alone (OA false) needs simple path constraints for local 20-pt path
+                        if not self.USE_OBSTACLE_AVOIDANCE:
+                            try:
+                                safety = float(self._car.safety_margin)
+                                mpc_N = int(self._cfg.mpc.N)
+                                local.update_simple_path_constraints(mpc_N, safety)
+                            except Exception as e:
+                                self.get_logger().warn(f"Frenet local simple constraints failed: {e}")
                         self._frenet_override=local; self._car.reference_path=local; self._car.update_reference_path(local)
                     elif self._frenet_override and self._frenet_planner.state.name=="IDLE" and abs(self._frenet_converter.cartesian_to_frenet(pose.x,pose.y)[1])<0.3:
                         self._car.reference_path=self._reference_path_global; self._car.update_reference_path(self._reference_path_global); self._frenet_override=None

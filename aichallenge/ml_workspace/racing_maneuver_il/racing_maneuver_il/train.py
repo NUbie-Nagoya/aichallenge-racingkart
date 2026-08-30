@@ -12,7 +12,6 @@ import numpy as np
 import torch
 import yaml
 from torch.nn import functional as F
-from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from .checkpoint import save_checkpoint
@@ -77,6 +76,25 @@ def _resolve_device(requested: str) -> torch.device:
     raise ValueError("device must be one of: auto, cpu, cuda")
 
 
+def _device_batches(
+    *,
+    lidar: torch.Tensor,
+    aux: torch.Tensor,
+    targets: torch.Tensor,
+    end_indices: torch.Tensor,
+    batch_size: int,
+    history_length: int,
+):
+    """Yield temporal batches assembled entirely on the selected device."""
+    offsets = torch.arange(
+        1 - history_length, 1, device=end_indices.device, dtype=torch.long
+    )
+    for start in range(0, len(end_indices), batch_size):
+        ends = end_indices[start : start + batch_size]
+        indices = ends.unsqueeze(1) + offsets.unsqueeze(0)
+        yield lidar[indices], aux[indices], targets[ends], ends
+
+
 def _create_run_directory(output_root: Path) -> Path:
     output_root.mkdir(parents=True, exist_ok=True)
     existing = [
@@ -118,8 +136,10 @@ def run_training(config: dict) -> dict:
         raise ValueError(
             "action_limits must contain two finite ordered low/high values"
         )
-    targets = torch.as_tensor(frames.targets, device=device)
-    outside = torch.any((targets < low) | (targets > high), dim=1)
+    target_tensor = torch.as_tensor(
+        frames.targets, dtype=torch.float32, device=device
+    )
+    outside = torch.any((target_tensor < low) | (target_tensor > high), dim=1)
     if torch.any(outside):
         raise ValueError(
             f"{int(torch.sum(outside))} target rows exceed configured action_limits"
@@ -152,10 +172,22 @@ def run_training(config: dict) -> dict:
             "each train/validation split needs at least one 10-frame history"
         )
     batch_size = int(config.get("batch_size", 32))
-    train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=False)
-    validation_loader = DataLoader(
-        validation_data, batch_size=batch_size, shuffle=False
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
+    # Keep source frames and temporal indexing on-device. This removes Python
+    # DataLoader collation and host-to-device copies from the training hot path.
+    lidar_device = torch.as_tensor(lidar, dtype=torch.float32, device=device)
+    aux_device = torch.as_tensor(aux, dtype=torch.float32, device=device)
+    train_end_indices = torch.as_tensor(
+        train_data.end_indices, dtype=torch.long, device=device
     )
+    validation_end_indices = torch.as_tensor(
+        validation_data.end_indices, dtype=torch.long, device=device
+    )
+    groups = normalized_frames.groups
+    adjacent = np.zeros(len(groups), dtype=np.bool_)
+    adjacent[1:] = groups[1:] == groups[:-1]
+    adjacent_device = torch.as_tensor(adjacent, dtype=torch.bool, device=device)
     model_config = dict(config.get("model", {}))
     model = TemporalPolicy(**model_config).to(device)
     optimizer = torch.optim.Adam(
@@ -167,7 +199,12 @@ def run_training(config: dict) -> dict:
     wc = float(weights.get("action_change", 0.05))
     resolved = dict(config)
     resolved.update(
-        {"seed": seed, "dataset": str(dataset_path), "output_dir": str(output)}
+        {
+            "seed": seed,
+            "dataset": str(dataset_path),
+            "output_dir": str(output),
+            "device": str(device),
+        }
     )
     (output / "resolved_config.yaml").write_text(
         yaml.safe_dump(resolved, sort_keys=True)
@@ -186,44 +223,60 @@ def run_training(config: dict) -> dict:
     epochs = int(config.get("epochs", 10))
     for epoch in range(epochs):
         model.train()
-        losses = []
+        total_loss = torch.zeros((), dtype=torch.float32, device=device)
+        batch_count = 0
         progress = tqdm(
-            train_loader,
+            _device_batches(
+                lidar=lidar_device,
+                aux=aux_device,
+                targets=target_tensor,
+                end_indices=train_end_indices,
+                batch_size=batch_size,
+                history_length=train_data.history_length,
+            ),
             desc=f"Epoch {epoch + 1}/{epochs}",
-            total=len(train_loader),
+            total=(len(train_end_indices) + batch_size - 1) // batch_size,
             unit="batch",
         )
-        for lidar_batch, aux_batch, target, meta in progress:
-            lidar_batch = lidar_batch.to(device)
-            aux_batch = aux_batch.to(device)
-            target = target.to(device)
+        for lidar_batch, aux_batch, target, ends in progress:
             optimizer.zero_grad()
             normalized, _ = model(lidar_batch, aux_batch)
             prediction = _physical(normalized, low, high)
             loss = ws * F.smooth_l1_loss(
                 prediction[:, 0], target[:, 0]
             ) + wl * F.smooth_l1_loss(prediction[:, 1], target[:, 1])
-            loss = loss + wc * grouped_action_change_loss(
-                prediction, target, meta["group"], meta["frame_index"]
-            )
+            valid = adjacent_device[ends[1:]]
+            delta_error = F.smooth_l1_loss(
+                torch.diff(prediction, dim=0),
+                torch.diff(target, dim=0),
+                reduction="none",
+            ).mean(dim=1)
+            change_loss = (delta_error * valid.float()).sum() / valid.sum().clamp_min(1)
+            loss = loss + wc * change_loss
             loss.backward()
             optimizer.step()
-            losses.append(float(loss.detach()))
-            progress.set_postfix(loss=f"{losses[-1]:.4f}")
+            total_loss = total_loss + loss.detach()
+            batch_count += 1
+            progress.set_postfix(loss=f"{loss.detach().item():.4f}")
         model.eval()
         predictions = []
-        targets = []
+        validation_targets = []
         maneuvers = []
         with torch.no_grad():
-            for lidar_batch, aux_batch, target, meta in validation_loader:
-                lidar_batch = lidar_batch.to(device)
-                aux_batch = aux_batch.to(device)
+            for lidar_batch, aux_batch, target, ends in _device_batches(
+                lidar=lidar_device,
+                aux=aux_device,
+                targets=target_tensor,
+                end_indices=validation_end_indices,
+                batch_size=batch_size,
+                history_length=validation_data.history_length,
+            ):
                 normalized, _ = model(lidar_batch, aux_batch)
                 predictions.append(_physical(normalized, low, high).cpu().numpy())
-                targets.append(target.numpy())
-                maneuvers.extend(meta["maneuver_class"])
+                validation_targets.append(target.cpu().numpy())
+                maneuvers.extend(normalized_frames.maneuver_classes[ends.cpu().numpy()])
         prediction_array = np.concatenate(predictions)
-        target_array = np.concatenate(targets)
+        target_array = np.concatenate(validation_targets)
         validation = compute_metrics(
             prediction_array, target_array, maneuver_classes=np.asarray(maneuvers)
         )
@@ -232,7 +285,7 @@ def run_training(config: dict) -> dict:
         )
         curve = {
             "epoch": epoch,
-            "train_loss": float(np.mean(losses)),
+            "train_loss": float((total_loss / batch_count).item()),
             "validation_score": score,
         }
         curves.append(curve)
@@ -262,6 +315,7 @@ def run_training(config: dict) -> dict:
     return {
         "best_epoch": best_epoch,
         "best_validation_score": best,
+        "device": str(device),
         "output_dir": str(output),
     }
 

@@ -86,6 +86,7 @@ def test_deterministic_synthetic_smoke_training_and_evaluation(tmp_path):
     run_output = Path(result["output_dir"])
     assert required.issubset({p.name for p in run_output.iterdir()})
     assert result["best_epoch"] == 0
+    assert result["device"] == "cpu"
     report = run_evaluation(
         run_output / "best.pt", dataset, run_output / "evaluation.json"
     )

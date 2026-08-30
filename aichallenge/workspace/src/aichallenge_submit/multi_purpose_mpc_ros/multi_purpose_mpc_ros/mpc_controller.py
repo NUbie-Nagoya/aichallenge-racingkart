@@ -444,11 +444,9 @@ class MPCController(Node):
         compute_speed_profile(self._car, self._mpc_cfg)
 
         # Add frenet converter and planner, with cfg
-        self._frenet_converter = FrenetConverter(self._reference_path)
-        self._reference_path_global = self._reference_path
         frenet_cfg_raw = self._cfg.frenet 
-        frenet_cfg = FrenetCfg(**{k: v for k,v in frenet_cfg_raw._asdict().items() if k in FrenetCfg.__dataclass_fields__})
-        self._frenet_planner = FrenetPlanner(self._frenet_converter, self._map, self._mpc_cfg, frenet_cfg)
+        self._frenet_cfg = FrenetCfg(**{k: v for k, v in frenet_cfg_raw._asdict().items() if k in FrenetCfg.__dataclass_fields__})
+        self._refresh_frenet_stack(self._reference_path)
         self._frenet_override = None
 
         self._ref_vel_configulator: Optional[ReferenceVelocityConfigulator] = create_ref_vel_configulator()
@@ -540,6 +538,16 @@ class MPCController(Node):
         dst_dir = self.PKG_PATH + f"log/{now}"
         os.makedirs(dst_dir, exist_ok=True)
         shutil.copy(self._config_path, os.path.join(dst_dir, "config.yaml"))
+
+    def _refresh_frenet_stack(self, reference_path: ReferencePath) -> None:
+        self._reference_path_global = reference_path
+        self._frenet_converter = FrenetConverter(reference_path)
+        self._frenet_planner = FrenetPlanner(
+            self._frenet_converter,
+            self._map,
+            self._mpc_cfg,
+            self._frenet_cfg,
+        )
 
     def _setup_pub_sub(self) -> None:
         # Publishers
@@ -845,8 +853,10 @@ class MPCController(Node):
             if self._cfg.reference_path.update_by_topic: # type: ignore
                 new_referece_path = self._create_reference_path_from_autoware_trajectory(self._trajectory)
                 if new_referece_path is not None:
-                    self._car.reference_path = new_referece_path
-                    self._car.update_reference_path(self._car.reference_path)
+                    self._refresh_frenet_stack(new_referece_path)
+                    if self._frenet_override is None:
+                        self._car.reference_path = new_referece_path
+                        self._car.update_reference_path(self._car.reference_path)
 
             def plot_reference_path(car):
                 import matplotlib.pyplot as plt
@@ -896,7 +906,19 @@ class MPCController(Node):
                         self._frenet_override=local; self._car.reference_path=local; self._car.update_reference_path(local)
                     elif self._frenet_override and self._frenet_planner.state.name=="IDLE" and abs(self._frenet_converter.cartesian_to_frenet(pose.x,pose.y)[1])<0.3:
                         self._car.reference_path=self._reference_path_global; self._car.update_reference_path(self._reference_path_global); self._frenet_override=None
-            u, max_delta = self._mpc.get_control()
+            try:
+                u, max_delta = self._mpc.get_control()
+            except (TypeError, ValueError, AttributeError, IndexError) as exc:
+                if self._frenet_override is None:
+                    raise
+                self.get_logger().warn(
+                    f"Frenet local path rejected by MPC; reverting to global path: {exc}"
+                )
+                self._car.reference_path = self._reference_path_global
+                self._car.update_reference_path(self._reference_path_global)
+                self._frenet_override = None
+                self._frenet_planner.state = type(self._frenet_planner.state).IDLE
+                u, max_delta = self._mpc.get_control()
             # self.get_logger().info(f"u: {u}")
 
 

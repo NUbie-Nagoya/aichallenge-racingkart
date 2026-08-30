@@ -1,6 +1,6 @@
 # This file is for converting between (x, y, psi) MPC <-> (s,d) frenet
-import numpy as np
 import math
+import numpy as np
 from multi_purpose_mpc_ros.core.reference_path import ReferencePath
 
 
@@ -9,34 +9,45 @@ class FrenetConverter:
         self.ref_path = ref_path
 
         # Compute cumulative path length
-        self.length_cum = np.concatenate([[0], np.cumsum(ref_path.segment_lengths)])
-        self.total_length = self.length_cum[-1]
+        self.length_cum = np.concatenate([[0.0], np.cumsum(ref_path.segment_lengths)])
+        self.total_length = float(self.length_cum[-1]) if len(self.length_cum) else 0.0
 
         # get waypoint info
-        self.wp_xy = np.array([(w.x, w.y) for w in ref_path.waypoints])
-        self.wp_psi = np.array([w.psi for w in ref_path.waypoints])
-        self.wp_kappa = np.array([w.kappa for w in ref_path.waypoints])
-        self.wp_lb = np.array([w.lb for w in ref_path.waypoints])
-        self.wp_ub = np.array([w.ub for w in ref_path.waypoints])
+        self.wp_xy = np.array([(w.x, w.y) for w in ref_path.waypoints], dtype=np.float64)
+        self.wp_psi = np.array([w.psi for w in ref_path.waypoints], dtype=np.float64)
+        self.wp_kappa = np.array([w.kappa for w in ref_path.waypoints], dtype=np.float64)
+        self.wp_lb = np.array([w.lb for w in ref_path.waypoints], dtype=np.float64)
+        self.wp_ub = np.array([w.ub for w in ref_path.waypoints], dtype=np.float64)
 
         self.wp_len = len(self.wp_xy)
 
         # from circular config (from ReferencePath)
         self.circular = ref_path.circular
 
-        if self.wp_len >= 2:                                                                                          
-                 self.seg_vec = self.wp_xy[1:] - self.wp_xy[:-1]  # (n-1,2)                                           
-                 self.seg_len = np.linalg.norm(self.seg_vec, axis=1) + 1e-12                                          
-        else:                                                                                                    
-            self.seg_vec = np.zeros((0,2))                                                                       
-            self.seg_len = np.zeros((0,))
+        if self.wp_len >= 2:
+            self.seg_vec = self.wp_xy[1:] - self.wp_xy[:-1]
+            self.seg_len = np.linalg.norm(self.seg_vec, axis=1) + 1e-12
+        else:
+            self.seg_vec = np.zeros((0, 2), dtype=np.float64)
+            self.seg_len = np.zeros((0,), dtype=np.float64)
+
+    def _normalize_s(self, s: float) -> float:
+        if self.circular and self.total_length > 0.0:
+            return float(s % self.total_length)
+        return float(max(0.0, min(s, self.total_length - 1e-9)))
 
     # x,y, yaw -> tuple(s,d, wp_id)
     def cartesian_to_frenet(self, x, y, yaw=None, window_size=3):
         if self.wp_len == 0:
             return 0.0, 0.0, 0
-        closest_waypoint = self.get_closest_waypoint(x, y)
+        if self.wp_len == 1:
+            wp = self.ref_path.waypoints[0]
+            dx = x - wp.x
+            dy = y - wp.y
+            d = -math.sin(wp.psi) * dx + math.cos(wp.psi) * dy
+            return 0.0, float(d), 0
 
+        closest_waypoint = self.get_closest_waypoint(x, y)
         wp_len = self.wp_len
 
         search_ids = []
@@ -58,9 +69,9 @@ class FrenetConverter:
         best_s, best_d, best_idx, best_err = 0.0, 0.0, closest_waypoint, float("inf")
         p = np.array([x, y], dtype=np.float64)
         for idx in search_ids:
-            next_idx = (
-                idx + 1
-            ) % wp_len  # for non-circular: checked already that next_idx is < wp_len
+            next_idx = (idx + 1) % wp_len
+            if not self.circular and next_idx >= wp_len:
+                continue
             p0 = self.wp_xy[idx]
             seg = self.wp_xy[next_idx] - p0
 
@@ -85,18 +96,21 @@ class FrenetConverter:
                 best_d = d
                 best_idx = idx
 
-        if self.circular:
+        if self.circular and self.total_length > 0.0:
             best_s %= self.total_length
-        return best_s, best_d, best_idx
+        return float(best_s), float(best_d), int(best_idx)
 
     def frenet_to_cartesian(self, s, d):
         """-> (x,y,psi,kappa_eff)  frenet_framework.md:24  inverse of s2t:156"""
         if self.wp_len == 0:
             return 0.0, 0.0, 0.0, 0.0
-        if self.circular:
-            s = s % self.total_length
-        else:
-            s = max(0.0, min(s, self.total_length - 1e-9))
+        if self.wp_len == 1:
+            wp = self.ref_path.waypoints[0]
+            x = wp.x - d * math.sin(wp.psi)
+            y = wp.y + d * math.cos(wp.psi)
+            return float(x), float(y), float(wp.psi), float(wp.kappa)
+
+        s = self._normalize_s(s)
 
         idx = int(np.searchsorted(self.length_cum, s, side="right") - 1)
         idx = max(0, min(idx, self.wp_len - 2))
@@ -119,29 +133,29 @@ class FrenetConverter:
         dpsi = math.atan2(math.sin(psi1 - psi0), math.cos(psi1 - psi0))
         psi = psi0 + t * dpsi
         psi = math.atan2(math.sin(psi), math.cos(psi))
-        kappa = float(self.wp_kappa[idx])
+        kappa0 = float(self.wp_kappa[idx])
+        kappa1 = float(
+            self.wp_kappa[(idx + 1) % self.wp_len] if self.circular else self.wp_kappa[idx + 1]
+        )
+        kappa = (1.0 - t) * kappa0 + t * kappa1
         # offset curvature
         kappa_eff = kappa / (1.0 - d * kappa + 1e-9)
         x = x0 - d * math.sin(psi)  # s2t:166
         y = y0 + d * math.cos(psi)  # s2t:168
-        return x, y, psi, kappa_eff
+        return float(x), float(y), float(psi), float(kappa_eff)
 
     def get_corridor(self, s):
-        s = (
-            s % self.total_length
-            if self.circular
-            else max(0, min(s, self.total_length))
-        )
+        if self.wp_len == 0:
+            return 0.0, 0.0
+        s = self._normalize_s(s)
         idx = int(np.searchsorted(self.length_cum, s, side="right") - 1)
         idx = max(0, min(idx, self.wp_len - 1))
         return float(self.wp_ub[idx]), float(self.wp_lb[idx])
 
     def get_raceline_v(self, s):
-        s = (
-            s % self.total_length
-            if self.circular
-            else max(0, min(s, self.total_length))
-        )
+        if self.wp_len == 0:
+            return 0.0
+        s = self._normalize_s(s)
         idx = int(np.searchsorted(self.length_cum, s, side="right") - 1)
         idx = max(0, min(idx, self.wp_len - 1))
         v = self.ref_path.waypoints[idx].v_ref
@@ -151,6 +165,9 @@ class FrenetConverter:
         return [self.cartesian_to_frenet(float(x), float(y)) for x, y in zip(xs, ys)]
 
     def get_closest_waypoint(self, x, y):
+        if self.wp_len == 0:
+            return 0
+
         # Compute distances from the point to all waypoints
         distances = np.sqrt(
             (np.array([wp.x for wp in self.ref_path.waypoints]) - x) ** 2
@@ -158,10 +175,5 @@ class FrenetConverter:
         )
 
         # Get the index of the closest waypoint
-        closest_wp_id = np.argmin(distances)
+        closest_wp_id = int(np.argmin(distances))
         return closest_wp_id
-
-
-if __name__ == "__main__":
-    frenet_obj = FrenetConverter
-    print(frenet_obj.cartesian_to_frenet(1, 2))

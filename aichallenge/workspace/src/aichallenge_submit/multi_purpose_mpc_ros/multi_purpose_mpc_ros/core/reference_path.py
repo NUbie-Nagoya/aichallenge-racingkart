@@ -236,8 +236,19 @@ class ReferencePath:
     #         wp.v_ref = v
 
     def set_v_ref(self, v_ref: List[float]) -> None:
+        if not self.waypoints:
+            self.waypoint_velocities = []
+            return
+
+        new_v_ref = list(v_ref)
+        if not new_v_ref:
+            new_v_ref = [0.0] * len(self.waypoints)
+        elif len(new_v_ref) < len(self.waypoints):
+            new_v_ref.extend([new_v_ref[-1]] * (len(self.waypoints) - len(new_v_ref)))
+
+        self.waypoint_velocities = new_v_ref[:len(self.waypoints)]
         for wp, v in zip(self.waypoints, self.waypoint_velocities):
-            wp.v_ref = v
+            wp.v_ref = float(v)
 
     def _construct_path(self, wp_x, wp_y, wp_vx: Optional[List[float]] = None):
         """

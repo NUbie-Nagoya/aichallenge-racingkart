@@ -1,7 +1,7 @@
 import math
 import numpy as np
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional
 from enum import Enum
 
 from multi_purpose_mpc_ros.core.map import Map, Obstacle
@@ -63,14 +63,15 @@ class LocalPath:
         rp = ReferencePath.__new__(ReferencePath)
         rp.map = map_obj
         rp.resolution = resolution
-        rp.circular = False
+        rp.circular = circular
         rp.smoothing_distance = 0
         rp.eps = 1e-12
         rp.waypoints = [
             Waypoint(x, y, psi, k)
             for x, y, psi, k in zip(self.xs, self.ys, self.psis, self.kappas)
         ]
-        for w, v in zip(rp.waypoints, self.vs):
+        rp.waypoint_velocities = list(self.vs)
+        for w, v in zip(rp.waypoints, rp.waypoint_velocities):
             w.v_ref = v
         rp.n_waypoints = len(rp.waypoints)
         # straight length for MPC s tracking
@@ -97,6 +98,11 @@ class FrenetPlanner:
         self.lead_id = None
         self.last_lead_s: Optional[float] = None
 
+    def _forward_distance(self, s_from: float, s_to: float) -> float:
+        if self.conv.circular and self.conv.total_length > 0.0:
+            return float((s_to - s_from) % self.conv.total_length)
+        return float(s_to - s_from)
+
     def update(
         self, pose, v_ego: float, obstacles: List[Obstacle], car
     ) -> Optional[LocalPath]:
@@ -107,12 +113,8 @@ class FrenetPlanner:
         v_lead = 0.0
         for ob in obstacles:
             s_o, d_o, _ = self.conv.cartesian_to_frenet(ob.cx, ob.cy)
-            if (
-                s_o > s_ego
-                and s_o - s_ego < 40
-                and abs(d_o - d_ego) < self.cfg.lane_margin
-            ):
-                ds = s_o - s_ego
+            ds = self._forward_distance(s_ego, s_o)
+            if ds > 0.0 and ds < 40.0 and abs(d_o - d_ego) < self.cfg.lane_margin:
                 if ds < best_ds:
                     best_ds = ds
                     lead = ob
@@ -121,16 +123,15 @@ class FrenetPlanner:
         if lead is not None:
             self.last_lead_s = lead_s
             # estimate v_lead via tracker if available else 0
-            ttc = (lead_s - s_ego) / max(v_ego - 2.0, 0.5)  # fallback 2m/s if unknown
+            ttc = self._forward_distance(s_ego, lead_s) / max(v_ego - 2.0, 0.5)
             if self.state == State.IDLE and (ttc < self.cfg.ttc_thr):
                 cand = self.plan_overtake(s_ego, d_ego, v_ego, lead_s, lead_d)
                 if cand:
                     self.state = State.OVERTAKE
                     return cand
-                else:  # no corridor -> braking
-                    self.state = State.BRAKING
-                    return self.plan_braking(s_ego, d_ego, v_ego, lead_s, 2.0)
-            if self.state == State.OVERTAKE and s_ego > lead_s + self.cfg.clearance:
+                self.state = State.BRAKING
+                return self.plan_braking(s_ego, d_ego, v_ego, lead_s, 2.0)
+            if self.state == State.OVERTAKE and self._forward_distance(lead_s, s_ego) > self.cfg.clearance:
                 self.state = State.RETURN
                 return self.plan_return(s_ego, d_ego, v_ego)
             if self.state == State.RETURN and abs(d_ego) < 0.3:
@@ -145,7 +146,11 @@ class FrenetPlanner:
                 return self.plan_braking(s_ego, d_ego, v_ego, lead_s, 2.0)
         else:
             # no lead currently visible – allow OVERTAKE->RETURN via remembered lead
-            if self.state == State.OVERTAKE and self.last_lead_s is not None and s_ego > self.last_lead_s + self.cfg.clearance:
+            if (
+                self.state == State.OVERTAKE
+                and self.last_lead_s is not None
+                and self._forward_distance(self.last_lead_s, s_ego) > self.cfg.clearance
+            ):
                 self.state = State.RETURN
                 return self.plan_return(s_ego, d_ego, v_ego)
             if self.state == State.RETURN and abs(d_ego) < 0.3:
@@ -171,7 +176,7 @@ class FrenetPlanner:
                     try:
                         lat = lateral_quintic(d0, d_dot0, d_target, T)
                         lon = longitudinal_quintic(s0, v0, s_target, v_target, T)
-                    except:
+                    except Exception:
                         continue
                     xs, ys, psis, kappas = [], [], [], []
                     ts = np.linspace(0, T, 20)
@@ -192,9 +197,8 @@ class FrenetPlanner:
                             feasible = False
                             break
                         # width check
-                        s_c, _, _ = self.conv.cartesian_to_frenet(xs[i], ys[i])
+                        s_c, d_c, _ = self.conv.cartesian_to_frenet(xs[i], ys[i])
                         ub, lb = self.conv.get_corridor(s_c)
-                        _, d_c, _ = self.conv.cartesian_to_frenet(xs[i], ys[i])
                         if not (lb + 0.3 < d_c < ub - 0.3):
                             feasible = False
                             break
@@ -234,7 +238,7 @@ class FrenetPlanner:
             try:
                 lat = lateral_quintic(d0, 0.0, 0.0, T)
                 lon = longitudinal_quintic(s0, v0, s_target, v_target, T)
-            except:
+            except Exception:
                 continue
             ts = np.linspace(0, T, 20)
             xs, ys, psis, kappas = [], [], [], []
@@ -253,9 +257,8 @@ class FrenetPlanner:
 
     def plan_braking(self, s0, d0, v0, s_obs, v_obs) -> Optional[LocalPath]:
         gap = self.cfg.gap0 + self.cfg.gap_t * v0  # :49
-        s_target = s_obs - gap
-        if s_target <= s0:
-            s_target = s0 + 1.0
+        lead_gap = max(self._forward_distance(s0, s_obs), 0.0)
+        s_target = s0 + max(lead_gap - gap, 1.0)
         v_target = min(v_obs, self.conv.get_raceline_v(s_target))  # :51
         for T in self.cfg.T_brake:
             a_req = 2 * ((s_target - s0) - v0 * T) / T**2
@@ -263,7 +266,7 @@ class FrenetPlanner:
                 continue  # :58 fallback handled by caller
             try:
                 lon = longitudinal_quintic(s0, v0, s_target, v_target, T)
-            except:
+            except Exception:
                 continue
             ts = np.linspace(0, T, 20)
             xs, ys, psis, kappas = [], [], [], []

@@ -49,7 +49,7 @@ class ReferencePathGenerator():
             is_ref_path_given = cfg_ref_path.csv_path != ""
             if is_ref_path_given:
                 print("Using given reference path")
-                wp_x, wp_y, _, _ = load_ref_path(cls.__in_pkg_share(cfg.reference_path.csv_path))
+                _, wp_x, wp_y, wp_vx, _, _, _ = load_ref_path(cls.__in_pkg_share(cfg.reference_path.csv_path))
                 return ReferencePath(
                     map,
                     wp_x,
@@ -57,7 +57,8 @@ class ReferencePathGenerator():
                     cfg_ref_path.resolution,
                     cfg_ref_path.smoothing_distance,
                     cfg_ref_path.max_width,
-                    cfg_ref_path.circular)
+                    cfg_ref_path.circular,
+                    wp_vx=wp_vx)
             else:
                 print("Using waypoints to create reference path")
                 wp_x, wp_y = load_waypoints(cls.__in_pkg_share(cfg.waypoints.csv_path))
@@ -68,7 +69,8 @@ class ReferencePathGenerator():
                     cfg_ref_path.resolution,
                     cfg_ref_path.smoothing_distance,
                     cfg_ref_path.max_width,
-                    cfg_ref_path.circular)
+                    cfg_ref_path.circular,
+                    wp_vx=None)
 
         map = create_map()
         return create_ref_path(map)

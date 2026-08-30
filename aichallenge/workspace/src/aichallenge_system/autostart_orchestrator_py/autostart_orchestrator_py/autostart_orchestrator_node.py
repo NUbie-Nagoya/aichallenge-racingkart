@@ -12,6 +12,10 @@ import time
 from pathlib import Path
 from typing import Optional
 
+#++++++++++++
+from nav_msgs.msg import Odometry
+#+++++++++++
+
 import rclpy
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -125,6 +129,29 @@ class AutostartOrchestrator(Node):
         rclpy.get_default_context().on_shutdown(self._on_rclpy_shutdown)
 
         self._sub = self.create_subscription(String, vehicle_state_topic, self._on_vehicle_state, 10, callback_group=cbg)
+
+        #+++++++++++
+
+        # NOTE: ADDITIONAL CODE!!
+
+        # # --- 1. ADD WATCHDOG SETUP HERE ---
+        self._last_moving_time = time.time()
+        self._is_stalled = False
+
+        self._capture_started = False
+        self._rosbag_started = False
+        self._rosbag_proc = None
+        self._capture_proc = None
+        self._motion_proc = None
+
+        self._vel_sub = self.create_subscription(
+            Odometry, 
+            "/localization/kinematic_state", 
+            self._on_velocity, 
+            10, 
+            callback_group=cbg
+        )
+        #+++++++++++
 
         self._cli_initial_pose = self.create_client(
             Trigger, str(self.get_parameter("initial_pose_service").value), callback_group=cbg
@@ -411,6 +438,51 @@ class AutostartOrchestrator(Node):
         with self._cond:
             self._last_vehicle_state = state
             self._cond.notify_all()
+
+    #====================
+
+    # NOTE: ADDITIONAL CODE!!
+
+    # --- 2. ADD WATCHDOG CALLBACK HERE ---
+    def _on_velocity(self, msg: Odometry) -> None:
+        valid_states = (self._STATE_RUNNING, self._STATE_RECORDING, self._STATE_WAIT_STOP)
+        if self._workflow_state not in valid_states:
+            self._last_moving_time = None
+            self._has_moved_once = False
+            return
+        
+
+        vx = msg.twist.twist.linear.x
+        vy = msg.twist.twist.linear.y
+        speed = (vx**2 + vy**2)**0.5
+
+        # Initialize the timer only once the race has actively begun
+        now = time.time()
+        if self._last_moving_time is None:
+            self._last_moving_time = now
+            self._has_moved_once = False
+
+        # Reset timer if moving, or trip stall after 5 seconds of standing still
+        if speed > 0.2:
+            self._has_moved_once = False
+            self._last_moving_time = now
+        else:
+            stall_timeout = 5.0 if self._has_moved_once else 15.0
+            if (time.time() - self._last_moving_time) > stall_timeout:
+                self._is_stalled = True
+                self.get_logger().warn("Vehicle has stalled for more than 5 seconds. Triggering shutdown.")
+            
+                # Write flag immediately
+                flag_path = self._output_dir() / "stalled.flag"
+                with open(str(flag_path), "w") as f:
+                    f.write("stalled")
+                
+                # Trip state and trigger shutdown
+                with self._cond:
+                    self._last_vehicle_state = "finish"
+                    self._cond.notify_all()
+
+    #====================
 
     @staticmethod
     def _normalize_state(raw: Optional[str]) -> str:
@@ -995,6 +1067,12 @@ class AutostartOrchestrator(Node):
 
                 if stop_on:
                     ok, last = self._wait_for_vehicle_state(stop_on)
+
+                    if self._is_stalled:
+                        flag_path = self._output_dir() / "stalled.flag"
+                        with open(str(flag_path), "w") as f:
+                            f.write("stalled")
+                    
                     if ok:
                         self._set_workflow_state(self._STATE_FINISHED, "stop condition met (no recording)")
                         if exit_on_finish:
@@ -1030,8 +1108,21 @@ class AutostartOrchestrator(Node):
                 self._shutdown()
                 return
 
+            #+++++++++++++++++
+
+            # NOTE: ADDITIONAL CODE!!
+
             self._set_workflow_state(self._STATE_STOPPING, "stopping capture/rosbag")
             self._finalize_recordings(enable_rosbag, enable_capture, enable_motion_analytics)
+
+            # Write appropriate completion status flag
+            
+            if not self._is_stalled:
+                finish_flag_path = self._output_dir() / "finished.flag"
+                with open(str(finish_flag_path), "w") as f:
+                    f.write("finished")
+
+            #+++++++++++++++++
 
             self._set_workflow_state(self._STATE_FINISHED, "shutdown requested")
             if exit_on_finish:

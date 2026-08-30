@@ -20,8 +20,11 @@ def load_waypoints(csv_file_path: str) -> Tuple[List[float], List[float]]:
 
 def load_ref_path(csv_file_path: str):
     df = pd.read_csv(csv_file_path)
+    s = df['s_m'].tolist() # added
     x = df['x_m'].tolist()
     y = df['y_m'].tolist()
     psi = df['psi_rad'].tolist()
     kappa = df['kappa_radpm'].tolist()
-    return x, y, psi, kappa
+    vx = df['vx_mps'].tolist() # added
+    ax = df['ax_mps2'].tolist() # added
+    return s, x, y, psi, kappa, vx, ax

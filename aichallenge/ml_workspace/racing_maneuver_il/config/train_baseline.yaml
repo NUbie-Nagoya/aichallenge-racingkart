@@ -1,0 +1,19 @@
+dataset: data/processed/maneuvers.npz
+output_dir: runs/baseline
+seed: 42
+torch_threads: 1
+epochs: 50
+batch_size: 64
+learning_rate: 0.001
+split_ratios: [0.70, 0.15, 0.15]
+model:
+  lidar_embedding: 32
+  aux_embedding: 16
+  hidden_size: 64
+loss_weights:
+  steering: 2.0
+  longitudinal: 1.0
+  action_change: 0.05
+action_limits:
+  low: [-1.00, -3.0]
+  high: [1.00, 3.0]

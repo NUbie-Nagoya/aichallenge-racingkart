@@ -1,0 +1,31 @@
+schema_version: 1
+lidar:
+  rays: 360
+  fov_deg: 270.0
+  model_max_range_m: 30.0
+history:
+  length: 10
+  rate_hz: 20.0
+freshness_s:
+  lidar: 0.10
+  ego_state: 0.10
+  v2x: 0.25
+features:
+  auxiliary_order:
+    - longitudinal_velocity_mps
+    - measured_steering_rad
+    - longitudinal_acceleration_mps2
+    - previous_safe_steering_command_rad
+    - previous_safe_longitudinal_command
+    - opponent_present
+    - opponent_relative_x_body_m
+    - opponent_relative_y_body_m
+    - opponent_relative_vx_body_mps
+    - opponent_relative_vy_body_mps
+    - opponent_age_s
+targets:
+  - steering_tire_angle_rad
+  - longitudinal_acceleration_mps2
+action_limits:
+  low: [-1.00, -4.0]
+  high: [1.00, 3.0]

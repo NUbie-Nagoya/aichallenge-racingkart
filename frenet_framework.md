@@ -72,5 +72,3 @@
     - **If track is clear**: Switch the longitudinal target velocity back to the full raceline velocity profile (v_target = v_raceline) and generate a smooth acceleration quintic polynomial up to top speed.
     - **If an overtaking corridor opens**: Hand control back directly to the Overtaking Planner (Part 1 from the previous step) to initiate the lateral swing and pass.
      
-
-

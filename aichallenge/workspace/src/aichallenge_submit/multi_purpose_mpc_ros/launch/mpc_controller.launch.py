@@ -13,22 +13,18 @@ from launch_ros.actions import Node, SetParameter
 
 
 def launch_setup(context, *args, **kwargs):
+    import os
     use_sim_time = LaunchConfiguration("use_sim_time")
     use_obstacle_avoidance = LaunchConfiguration("use_obstacle_avoidance")
     use_boost_acceleration = LaunchConfiguration("use_boost_acceleration")
     use_stats = LaunchConfiguration("use_stats")
 
-    config_path = (
-        Path(get_package_share_directory("multi_purpose_mpc_ros"))
-        / "config"
-        / "config.yaml"
-    )
-
-    ref_vel_path = (
-        Path(get_package_share_directory("multi_purpose_mpc_ros"))
-        / "config"
-        / "ref_vel.yaml"
-    )
+    domain = os.environ.get("ROS_DOMAIN_ID","1")
+    base = Path(get_package_share_directory("multi_purpose_mpc_ros"))
+    cand = base / "config" / f"config_d{domain}.yaml"
+    config_path = cand if cand.exists() else base / "config" / "config.yaml"
+    cand_ref = base / "config" / f"ref_vel_d{domain}.yaml"
+    ref_vel_path = cand_ref if cand_ref.exists() else base / "config" / "ref_vel.yaml"
 
     mpc_controller = Node(
         package="multi_purpose_mpc_ros",

@@ -26,6 +26,7 @@
 
     <!-- Main module of AI challenge 2025. -->
     <include file="$(find-pkg-share aichallenge_submit_launch)/launch/aichallenge_submit.launch.xml" >
+        <arg name="domain_id" value="$(var domain_id)"/>
         <arg name="simulation" value="$(var simulation)"/>
         <arg name="use_sim_time" value="$(var use_sim_time)"/>
         <arg name="sensor_model" value="$(var sensor_model)"/>

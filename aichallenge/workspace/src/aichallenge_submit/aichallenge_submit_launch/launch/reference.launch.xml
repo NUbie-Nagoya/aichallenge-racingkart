@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <launch>
   <!-- Essential parameters -->
+  <arg name="domain_id" default="$(env ROS_DOMAIN_ID 1)"/>
   <arg name="vehicle_id" default="$(env VEHICLE_ID default)" description="vehicle specific ID"/>
   <arg name="simulation" description="used for sensor kit param"/>
   <arg name="use_sim_time"/>
@@ -127,8 +128,8 @@
     <group>
       <push-ros-namespace namespace="scenario_planning"/>
 
-      <!-- get mpc config and read reference path from it inside the node -->
-      <arg name="mpc_config_file" default="$(eval &quot;'config.yaml' if '$(var track)' == 'citycircuit' else 'config_' + '$(var track)' + '.yaml'&quot;)"/>
+      <!-- get mpc config and read reference path from it inside the node (domain-aware: d2 uses config_d2.yaml) -->
+      <arg name="mpc_config_file" default="$(eval &quot;'config_d' + '$(var domain_id)' + '.yaml' if '$(var domain_id)' != '1' and '$(var track)' == 'citycircuit' else ('config.yaml' if '$(var track)' == 'citycircuit' else 'config_' + '$(var track)' + '.yaml')&quot;)"/>
       <!-- link the trajectory generator to use mpc reference line -->
       <node pkg="simple_trajectory_generator" exec="simple_trajectory_generator_node" name="simple_trajectory_generator" output="screen">
             <param name="csv_path" value="$(find-pkg-share simple_trajectory_generator)/data/$(var track_subdir)raceline_awsim_30km_from_garage.csv"/>
@@ -149,6 +150,7 @@
 
   <group if="$(eval &quot;'$(var control_method)' == 'mpc'&quot;)">
     <include file="$(find-pkg-share aichallenge_submit_launch)/launch/control/mpc.launch.xml">
+      <arg name="domain_id" value="$(var domain_id)"/>
       <arg name="use_sim_time" value="$(var use_sim_time)"/>
       <arg name="track" value="$(var track)"/>
     </include>

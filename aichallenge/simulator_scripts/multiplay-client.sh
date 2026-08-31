@@ -5,9 +5,9 @@ export ROS_DOMAIN_ID=0
 
 exec $AWSIM_DIRECTORY/AWSIM.x86_64 \
     --multiplay client \
-    --multiplay-address 127.0.0.1 \
+    --multiplay-address 192.168.11.11 \
     --multiplay-port 7777 \
     --multiplay-vehicle-index 1 \
     --handicap off \
     --ranking off \
-    --vehicles 1
+    --vehicles 2

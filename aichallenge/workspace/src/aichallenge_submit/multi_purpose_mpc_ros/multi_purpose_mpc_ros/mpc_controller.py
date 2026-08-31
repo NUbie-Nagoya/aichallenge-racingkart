@@ -213,14 +213,122 @@ class MPCController(Node):
             cfg_ref_path.circular)
 
         mpc_config = self._mpc_cfg
+        # use base v_max (unscaled) for profile, then apply velocity_scale post
+        base_vmax = float(getattr(self, '_base_mpc_v_max', mpc_config.v_max))
+        # fallback if base not yet stored (early call before _initialize fully)
+        if not hasattr(self, '_base_mpc_v_max'):
+            try:
+                base_vmax = float(kmh_to_m_per_sec(self._cfg.mpc.v_max))  # type: ignore
+                if self.USE_BUG_ACC:
+                    base_vmax = float(kmh_to_m_per_sec(self.BUG_VEL))
+            except Exception:
+                base_vmax = float(mpc_config.v_max)
         speed_profile_constraints = {
             "a_min": mpc_config.a_min, "a_max": mpc_config.a_max,
-            "v_min": 0.0, "v_max": mpc_config.v_max, "ay_max": mpc_config.ay_max}
+            "v_min": 0.0, "v_max": base_vmax, "ay_max": mpc_config.ay_max}
 
         if not reference_path.compute_speed_profile(speed_profile_constraints):
             return None
 
+        # capture base before scaling
+        try:
+            base_traj = [float(wp.v_ref) for wp in reference_path.waypoints]
+        except Exception:
+            base_traj = []
+        # apply current velocity_scale to freshly computed trajectory path
+        try:
+            scale = float(getattr(self, '_velocity_scale', 1.0))
+            if abs(scale - 1.0) > 1e-9 and base_traj:
+                scaled = [float(v) * scale for v in base_traj]
+                reference_path.set_v_ref(scaled)
+                # store scaled path's base for later rescaling (keep unscaled base separate)
+                # caller (_control) will update _base_* if this becomes global
+        except Exception:
+            pass
+        # attach base as attribute for caller to pick up without recomputing
+        try:
+            reference_path._base_traj = base_traj
+        except Exception:
+            pass
         return reference_path
+
+    def _apply_velocity_scale(self, scale: float) -> None:
+        """Apply velocity_scale to global profile and MPC v_max (post compute_speed_profile).
+        Stores base profile/v_max on first call to allow reversible scaling and 0 => stop."""
+        try:
+            scale = float(scale)
+        except Exception:
+            return
+        scale = float(np.clip(scale, 0.0, 3.0))
+        self._velocity_scale = scale
+        try:
+            self._cfg.reference_path.velocity_scale = scale  # type: ignore
+        except Exception:
+            pass
+        # lazily init base storage from current profile if not yet stored
+        if not hasattr(self, '_base_profile') or not self._base_profile:
+            try:
+                self._base_profile = [float(wp.v_ref) for wp in self._reference_path.waypoints]
+            except Exception:
+                self._base_profile = []
+        if not hasattr(self, '_base_global_profile') or not self._base_global_profile:
+            try:
+                refg = getattr(self, '_reference_path_global', self._reference_path)
+                self._base_global_profile = [float(wp.v_ref) for wp in refg.waypoints]
+            except Exception:
+                self._base_global_profile = list(self._base_profile) if hasattr(self, '_base_profile') else []
+        if not hasattr(self, '_base_mpc_v_max'):
+            try:
+                # base is cfg value (not already scaled mpc_cfg)
+                self._base_mpc_v_max = float(kmh_to_m_per_sec(self._cfg.mpc.v_max))  # type: ignore
+                if self.USE_BUG_ACC:
+                    # when BUG enabled, mpc effective base is BUG_VEL; keep max of both for scaling intent
+                    bug_v = float(kmh_to_m_per_sec(self.BUG_VEL))
+                    # store the effective mpc base actually used at init for consistent scaling
+                    self._base_mpc_v_max = float(self._mpc_cfg.v_max) if hasattr(self, '_mpc_cfg') else bug_v
+            except Exception:
+                self._base_mpc_v_max = float(getattr(self._mpc_cfg, 'v_max', 5.0)) if hasattr(self, '_mpc_cfg') else 5.0
+
+        # scale global path
+        if hasattr(self, '_base_profile') and self._base_profile:
+            scaled = [float(v) * scale for v in self._base_profile]
+            try:
+                self._reference_path.set_v_ref(scaled)
+            except Exception:
+                pass
+            # also keep _reference_path_global in sync when no override
+            try:
+                if hasattr(self, '_reference_path_global') and self._reference_path_global is not self._reference_path:
+                    scaled_g = [float(v) * scale for v in (self._base_global_profile or self._base_profile)]
+                    self._reference_path_global.set_v_ref(scaled_g)
+            except Exception:
+                pass
+
+        # scale active frenet override if present
+        if getattr(self, '_frenet_override', None) is not None:
+            try:
+                base_o = getattr(self, '_base_override_profile', None)
+                if base_o is None:
+                    base_o = [float(wp.v_ref) for wp in self._frenet_override.waypoints]
+                    self._base_override_profile = base_o
+                scaled_o = [float(v) * scale for v in base_o]
+                self._frenet_override.set_v_ref(scaled_o)
+                # keep car reference in sync if it points to override
+                if self._car.reference_path is self._frenet_override:
+                    pass
+            except Exception:
+                pass
+
+        # scale MPC v_max
+        try:
+            base_v = float(getattr(self, '_base_mpc_v_max', self._mpc_cfg.v_max))
+            eff_v = float(base_v) * scale
+            self._mpc.update_v_max(eff_v)
+            self._mpc_cfg.v_max = eff_v
+        except Exception:
+            pass
+
+        self.get_logger().warn(f"velocity_scale applied -> {scale} (base_v_max {getattr(self,'_base_mpc_v_max', '?'):.2f} -> {getattr(self._mpc_cfg,'v_max', '?'):.2f} m/s)")
 
     def _setup_parameters_callback(self) -> None:
         def declatre_parameters():
@@ -241,6 +349,12 @@ class MPCController(Node):
             self.declare_parameter("accel_low_pass_gain", mpc_cfg.accel_low_pass_gain)
             self.declare_parameter("steer_low_pass_gain", mpc_cfg.steer_low_pass_gain)
             self.declare_parameter("wp_id_offset", mpc_cfg.wp_id_offset)
+            # loader for velocity_scale (reference velocity scaling)
+            try:
+                vel_scale = float(getattr(self._cfg.reference_path, 'velocity_scale', 1.0))
+            except Exception:
+                vel_scale = 1.0
+            self.declare_parameter("velocity_scale", vel_scale)
 
         def param_cb(parameters):
             cfg_mpc = self._cfg.mpc # type: ignore
@@ -266,12 +380,31 @@ class MPCController(Node):
 
             for param in parameters:
                 if param.name == "v_max" and param.type_ == Parameter.Type.DOUBLE:
-                    mpc_cfg.v_max = param.value
-                    self._mpc.update_v_max(kmh_to_m_per_sec(param.value))
-                    v_ref: List[float] = [kmh_to_m_per_sec(param.value)] * len(self._reference_path.waypoints)
-                    self._reference_path.set_v_ref(v_ref)
-
-                    self.get_logger().warn(f"v_max was updated to '{param.value}' [km/h]")
+                    # v_max change should rebuild base profile then re-apply current velocity_scale
+                    try:
+                        base_scale = float(getattr(self, '_velocity_scale', 1.0))
+                    except Exception:
+                        base_scale = 1.0
+                    # update base mpc v_max
+                    mpc_cfg.v_max = param.value  # keep kmh for cfg
+                    try:
+                        self._base_mpc_v_max = float(kmh_to_m_per_sec(param.value))
+                        # update cfg base as well
+                        cfg_mpc.v_max = param.value
+                    except Exception:
+                        pass
+                    # uniform base profile at new v_max (pre-scale)
+                    v_base_mps = float(kmh_to_m_per_sec(param.value))
+                    base_profile = [v_base_mps] * len(self._reference_path.waypoints)
+                    self._base_profile = list(base_profile)
+                    try:
+                        refg = getattr(self, '_reference_path_global', self._reference_path)
+                        self._base_global_profile = list(base_profile[:len(refg.waypoints)])
+                    except Exception:
+                        self._base_global_profile = list(base_profile)
+                    # re-apply scale
+                    self._apply_velocity_scale(base_scale)
+                    self.get_logger().warn(f"v_max was updated to '{param.value}' [km/h] with velocity_scale {base_scale}")
 
                 elif param.name == "steering_tire_angle_gain_var" and param.type_ == Parameter.Type.DOUBLE:
                     mpc_cfg.steering_tire_angle_gain_var = param.value
@@ -315,6 +448,12 @@ class MPCController(Node):
                     self._mpc.update_wp_id_offset(param.value)
                     self.get_logger().warn(f"wp_id_offset was updated to '{param.value}'")
 
+                elif param.name == "velocity_scale" and param.type_ == Parameter.Type.DOUBLE:
+                    try:
+                        self._apply_velocity_scale(float(param.value))
+                    except Exception as e:
+                        self.get_logger().warn(f"Failed to update velocity_scale: {e}")
+
 
             return SetParametersResult(successful=True)
 
@@ -327,11 +466,25 @@ class MPCController(Node):
 
         def create_ref_path(map: Map) -> ReferencePath:
             cfg_ref_path = self._cfg.reference_path # type: ignore
+            # loader for velocity_scale in the process of ref velocity loading (stored for user to apply)
+            try:
+                velocity_scale = float(getattr(cfg_ref_path, 'velocity_scale', 1.0))
+            except Exception:
+                velocity_scale = 1.0
+            self._velocity_scale = velocity_scale
+            if velocity_scale != 1.0:
+                self.get_logger().info(f"[MPC] velocity_scale loader: {velocity_scale} (available as self._velocity_scale)")
+                self._velocity_scale = velocity_scale
 
             is_ref_path_given = cfg_ref_path.csv_path != "" # type: ignore
             if is_ref_path_given:
                 print("Using given reference path")
                 _, wp_x, wp_y, _, _, wp_vx, _ = load_ref_path(self.in_pkg_share(self._cfg.reference_path.csv_path)) # type: ignore
+                wp_vx_scaled = wp_vx
+                if wp_vx is not None:
+                    self.get_logger().info(f"[MPC] velocity_scale loader: scaled velocity to {self._velocity_scale}x.")
+                    wp_vx_scaled = [vx * self._velocity_scale for vx in wp_vx]
+                self.get_logger().info(f"[MPC] Reference Path: using given reference path. {self._cfg.reference_path.csv_path}")
                 return ReferencePath(
                     map,
                     wp_x,
@@ -340,7 +493,7 @@ class MPCController(Node):
                     cfg_ref_path.smoothing_distance,
                     cfg_ref_path.max_width,
                     cfg_ref_path.circular,
-                    wp_vx=wp_vx)
+                    wp_vx=wp_vx_scaled)
 
             else:
                 print("Using waypoints to create reference path")
@@ -442,6 +595,26 @@ class MPCController(Node):
         self._car = create_car(self._reference_path)
         self._mpc_cfg, self._mpc = create_mpc(self._car)
         compute_speed_profile(self._car, self._mpc_cfg)
+        # store base profile / v_max (pre-scale) for reversible velocity_scale handling
+        try:
+            self._base_mpc_v_max = float(self._mpc_cfg.v_max)
+            # also keep cfg base for reference
+            self._base_cfg_v_max = float(kmh_to_m_per_sec(self._cfg.mpc.v_max))  # type: ignore
+        except Exception:
+            self._base_mpc_v_max = float(getattr(self._mpc_cfg, 'v_max', 5.0))
+        try:
+            self._base_profile = [float(wp.v_ref) for wp in self._reference_path.waypoints]
+            self._base_global_profile = list(self._base_profile)
+        except Exception:
+            self._base_profile = []
+            self._base_global_profile = []
+        # if velocity_scale !=1, apply post-profile scaling (0 => stop)
+        try:
+            if abs(float(self._velocity_scale) - 1.0) > 1e-9:
+                self._apply_velocity_scale(float(self._velocity_scale))
+                self.get_logger().info(f"[MPC] post-profile velocity_scale {self._velocity_scale} applied: v_max {self._base_mpc_v_max:.2f} -> {self._mpc_cfg.v_max:.2f} m/s")
+        except Exception as e:
+            self.get_logger().warn(f"Failed to apply post-profile velocity_scale: {e}")
 
         # Add frenet converter and planner, with cfg
         frenet_cfg_raw = self._cfg.frenet 
@@ -853,6 +1026,17 @@ class MPCController(Node):
             if self._cfg.reference_path.update_by_topic: # type: ignore
                 new_referece_path = self._create_reference_path_from_autoware_trajectory(self._trajectory)
                 if new_referece_path is not None:
+                    # update base storages for future velocity_scale changes (unscaled base attached)
+                    try:
+                        base_traj = getattr(new_referece_path, '_base_traj', [float(wp.v_ref) for wp in new_referece_path.waypoints])
+                        # if current scale !=1, base_traj is unscaled, current waypoints are scaled
+                        # store unscaled base for global
+                        self._base_profile = list(base_traj)
+                        self._base_global_profile = list(base_traj)
+                        self._reference_path = new_referece_path
+                        self._reference_path_global = new_referece_path
+                    except Exception:
+                        pass
                     self._refresh_frenet_stack(new_referece_path)
                     if self._frenet_override is None:
                         self._car.reference_path = new_referece_path
@@ -892,9 +1076,41 @@ class MPCController(Node):
                 if self._loop % max(1,int(self._mpc_cfg.control_rate//self._cfg.frenet.reprojection_rate_hz))==0:
                     frenet_obs = getattr(self, '_static_obstacles', []) + getattr(self, '_dynamic_obstacles', [])
                     cand = self._frenet_planner.update(pose, v, frenet_obs, self._car)
+                    # apply velocity_scale to planner output early (post-profile scaling)
+                    try:
+                        scale = float(getattr(self, '_velocity_scale', 1.0))
+                    except Exception:
+                        scale = 1.0
+                    cand_base_vs = None
+                    if cand is not None:
+                        # save pre-scale base for reversible scaling
+                        try:
+                            cand_base_vs = list(cand.vs)
+                        except Exception:
+                            cand_base_vs = None
+                        if abs(scale - 1.0) > 1e-9:
+                            try:
+                                cand.vs = [float(vv) * scale for vv in cand.vs]
+                            except Exception:
+                                pass
+                            # also respect 0 => force braking behavior (no overtake)
+                            if scale == 0.0 and getattr(self._frenet_planner.state, 'name', '') == "OVERTAKE":
+                                # demote to braking when scaled to stop — avoid unwanted overtake vs>0 due to stale
+                                try:
+                                    s_ego, d_ego, _ = self._frenet_converter.cartesian_to_frenet(pose.x, pose.y)
+                                    cand = self._frenet_planner.plan_braking(s_ego, d_ego, v, 0.0, 0.0, frenet_obs)
+                                except Exception:
+                                    cand = self._frenet_planner.plan_braking(*self._frenet_converter.cartesian_to_frenet(pose.x, pose.y)[:2], v, 0.0, 0.0, frenet_obs) if hasattr(self._frenet_planner, 'plan_braking') else cand
+                                if cand is not None:
+                                    cand_base_vs = list(cand.vs)
+                                    cand.vs = [float(vv) * scale for vv in cand.vs]
                     if cand:
+                        # BRAKING path already contains slowed vs — do NOT overwrite with full speed profile
+                        # For OVERTAKE/RETURN the planner already curvature-capped vs, also keep it.
                         local = cand.to_reference_path(self._map, 0.6, False)
-                        local.compute_speed_profile({"a_min":self._mpc_cfg.a_min,"a_max":self._mpc_cfg.a_max,"v_min":0,"v_max":self._mpc_cfg.v_max,"ay_max":self._mpc_cfg.ay_max})
+                        # keep planner vs (already curvature and braking capped); ensure path constraints still built
+                        # only recompute speed profile if planner was IDLE-like (should not happen) — skip for safety
+                        # local.compute_speed_profile({...})  # REMOVED to preserve braking slowdown
                         # Frenet-alone (OA false) needs simple path constraints for local 20-pt path
                         if not self.USE_OBSTACLE_AVOIDANCE:
                             try:
@@ -904,8 +1120,102 @@ class MPCController(Node):
                             except Exception as e:
                                 self.get_logger().warn(f"Frenet local simple constraints failed: {e}")
                         self._frenet_override=local; self._car.reference_path=local; self._car.update_reference_path(local)
+                        # store base override vs for reversible scaling (pre-scale)
+                        try:
+                            if cand_base_vs is not None:
+                                self._base_override_profile = list(cand_base_vs)
+                            else:
+                                # fallback: derive base from scaled cand.vs
+                                if abs(scale) > 1e-9:
+                                    self._base_override_profile = [float(vv)/scale for vv in cand.vs]
+                                else:
+                                    self._base_override_profile = [float(vv) for vv in cand.vs]
+                        except Exception:
+                            try:
+                                self._base_override_profile = list(cand.vs)
+                            except Exception:
+                                self._base_override_profile = None
+                        # publish frenet candidate for viz
+                        try:
+                            self._publish_mpc_frenet_marker(cand.xs, cand.ys)
+                        except Exception:
+                            pass
+                        # keep v_ref consistent
+                        try:
+                            local.set_v_ref(cand.vs)
+                        except Exception:
+                            pass
+                        # clamp / restore MPC v_max so solver respects planner speed (braking slow, overtake fast)
+                        if self._frenet_planner.state.name == "BRAKING":
+                            try:
+                                v_brake = float(min(cand.vs)) if cand.vs else float(v*0.6*scale) if scale>0 else 0.0
+                                if scale == 0.0:
+                                    v_brake = 0.0
+                                else:
+                                    # scaled base already, so clamp with scaled limits
+                                    eff_max = float(getattr(self, '_base_mpc_v_max', self._mpc_cfg.v_max)) * scale
+                                    # also ensure not exceeding current scaled mpc cfg
+                                    eff_max = min(eff_max, float(self._base_mpc_v_max)*scale)
+                                    v_brake = max(1.0, min(v_brake, v*0.9, eff_max)) if eff_max>1.0 else max(0.0, min(v_brake, eff_max))
+                                    if v_brake < 0.1 and scale>0:
+                                        v_brake = max(0.5*scale, v_brake)
+                                self._mpc.update_v_max(v_brake)
+                            except Exception:
+                                pass
+                        else:
+                            # OVERTAKE / RETURN: restore to allow curvature-capped speed
+                            try:
+                                base_v = float(getattr(self, '_base_mpc_v_max', kmh_to_m_per_sec(self._cfg.mpc.v_max)))
+                                orig_v = base_v * scale
+                                # don't exceed scaled original max, but allow planner's curvature cap
+                                v_target = float(max(cand.vs)) if cand.vs else orig_v
+                                if scale == 0.0:
+                                    v_target = 0.0
+                                else:
+                                    v_target = max(2.0*scale if scale>0 else 0.0, min(orig_v, max(v_target, v*0.8*scale if scale>0 else 0.0)))
+                                    # for scale small, allow low limits
+                                    if orig_v < 2.0:
+                                        v_target = min(orig_v, v_target)
+                                self._mpc.update_v_max(v_target)
+                            except Exception:
+                                pass
+                    elif self._frenet_planner.state.name == "BRAKING":
+                        # fallback: planner wants braking but cand None — still slow down via v_max
+                        try:
+                            scale = float(getattr(self, '_velocity_scale', 1.0))
+                            if scale == 0.0:
+                                v_brake = 0.0
+                            else:
+                                v_brake = max(1.0*scale, v*0.65*scale) if scale<1 else max(1.0, v*0.65)
+                                # cap to scaled max
+                                base_v = float(getattr(self, '_base_mpc_v_max', kmh_to_m_per_sec(self._cfg.mpc.v_max)))
+                                v_brake = min(v_brake, base_v*scale)
+                            self._mpc.update_v_max(v_brake)
+                            self.get_logger().warn(f"Frenet BRAKING fallback v_max {v_brake:.1f} m/s (scale {scale})")
+                        except Exception:
+                            pass
                     elif self._frenet_override and self._frenet_planner.state.name=="IDLE" and abs(self._frenet_converter.cartesian_to_frenet(pose.x,pose.y)[1])<0.3:
                         self._car.reference_path=self._reference_path_global; self._car.update_reference_path(self._reference_path_global); self._frenet_override=None
+                        # restore v_max to scaled cfg max (braking may have lowered it)
+                        try:
+                            base_v = float(getattr(self, '_base_mpc_v_max', kmh_to_m_per_sec(self._cfg.mpc.v_max)))
+                            scale = float(getattr(self, '_velocity_scale', 1.0))
+                            orig_v = base_v * scale
+                            self._mpc.update_v_max(orig_v)
+                            # clear override base
+                            self._base_override_profile = None
+                        except Exception:
+                            pass
+                    elif self._frenet_override is None and self._frenet_planner.state.name=="IDLE":
+                        # ensure v_max restored even if we were braking without override (fallback branch)
+                        try:
+                            base_v = float(getattr(self, '_base_mpc_v_max', kmh_to_m_per_sec(self._cfg.mpc.v_max)))
+                            scale = float(getattr(self, '_velocity_scale', 1.0))
+                            orig_v = base_v * scale
+                            if abs(self._mpc.input_constraints['umax'][0] - orig_v) > 0.3:
+                                self._mpc.update_v_max(orig_v)
+                        except Exception:
+                            pass
             try:
                 u, max_delta = self._mpc.get_control()
             except (TypeError, ValueError, AttributeError, IndexError) as exc:

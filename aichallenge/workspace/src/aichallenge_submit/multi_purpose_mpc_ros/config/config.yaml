@@ -54,6 +54,7 @@ reference_path:
   update_by_topic: false
   use_border_cells_topic: false
   use_path_constraints_topic: false
+  velocity_scale: 1.2  # loader for scaling reference velocities
 sim_logger:
   animation_enabled: false
 v2x_obstacle_avoidance:

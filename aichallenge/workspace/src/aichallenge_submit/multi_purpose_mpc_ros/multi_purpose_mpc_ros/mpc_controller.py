@@ -54,6 +54,13 @@ from multi_purpose_mpc_ros.exexution_stats import ExecutionStats
 from multi_purpose_mpc_ros_msgs.msg import AckermannControlBoostCommand, PathConstraints, BorderCells
 from multi_purpose_mpc_ros.tools.reference_velocity_configulator import ReferenceVelocityConfigulator
 
+########
+# NOTE: ADDITIONAL (GearCommand, reverse/forward)
+
+from autoware_auto_vehicle_msgs.msg import GearCommand
+
+#########3#
+
 
 RED = ColorRGBA(r=1.0, g=0.0, b=0.0, a=1.0)
 YELLOW = ColorRGBA(r=1.0, g=1.0, b=0.0, a=1.0)
@@ -144,6 +151,7 @@ class MPCController(Node):
         self.USE_OBSTACLE_AVOIDANCE = self.get_parameter("use_obstacle_avoidance").get_parameter_value().bool_value
         self.use_stats = self.get_parameter("use_stats").get_parameter_value().bool_value
 
+
         self._config_path = config_path
         self._ref_vel_config_path: Optional[str] = ref_vel_config_path
         self._cfg = self._load_config()
@@ -165,6 +173,16 @@ class MPCController(Node):
             self.get_logger().warn("------------------------------------")
             self.get_logger().warn("USE_OBSTACLE_AVOIDANCE is enabled!")
             self.get_logger().warn("------------------------------------")
+
+        ##################
+        # NOTE: ADDITIONAL
+        # Recovery state variables
+        self._recovery_state = "NORMAL"  # "NORMAL" or "REVERSING"
+        self._reverse_start_time = None
+        self._zero_vel_start_time = None
+        self._REVERSE_DURATION = 5     # seconds to back up
+        self._REVERSE_SPEED = 3       # m/s
+        ###################
 
     def _load_config(self) -> NamedTuple:
 
@@ -722,6 +740,17 @@ class MPCController(Node):
             self._frenet_cfg,
         )
 
+    #####################
+    # NOTE: ADDITIONAL Gear command publisher and helper function
+
+    def _publish_gear(self, gear_state: int) -> None:
+        gear_msg = GearCommand()
+        gear_msg.stamp = self.get_clock().now().to_msg()
+        gear_msg.command = gear_state
+        self._gear_pub.publish(gear_msg)
+
+    ####################33
+
     def _setup_pub_sub(self) -> None:
         # Publishers
         if self.USE_BUG_ACC:
@@ -733,6 +762,14 @@ class MPCController(Node):
           self._command_raw_pub = self.create_publisher(
             AckermannControlCommand, "/control/command/control_cmd_raw", 1)
           print("use normal ackermann control command")
+        
+        #################3
+        # NOTE: ADDITIONAL (Forward/reverse)
+        
+        self._gear_pub = self.create_publisher(
+            GearCommand, "/control/command/gear_cmd", 1)
+
+        ###############
 
         # NOTE:評価環境での可視化のためにダミーのトピック名を使用
         self._mpc_pred_pub = self.create_publisher(
@@ -1007,6 +1044,8 @@ class MPCController(Node):
         self._ref_path_pub_dummy.publish(ref_path_marker_array)
 
     def _control(self):
+
+        # Setup clock and timing variables
         now = self.get_clock().now()
         t = (now - self._t_start).nanoseconds / 1e9
         dt = (now - self._last_t).nanoseconds / 1e9
@@ -1021,6 +1060,7 @@ class MPCController(Node):
         # self.get_logger().info("loop")
         self._control_rate.sleep()
 
+        # Update reference path periodically
         if self._loop % 100 == 0:
             # update reference path
             if self._cfg.reference_path.update_by_topic: # type: ignore
@@ -1051,6 +1091,7 @@ class MPCController(Node):
                 sys.exit(1)
             # plot_reference_path(self._car)
 
+        # Update obstacle map if necessary
         if self.USE_OBSTACLE_AVOIDANCE and self._obstacles_updated:
             self._obstacles_updated = False
             self._map.reset_map()
@@ -1058,6 +1099,7 @@ class MPCController(Node):
             self._map.add_obstacles(self._static_obstacles + filtered_dynamic)
             self._reference_path.reset_dynamic_constraints()
 
+        # Check for collision status and update last colliding time
         is_colliding = False
         if self._last_colliding_time is not None:
             elapsed_from_last_colliding = (now - self._last_colliding_time).nanoseconds / 1e9
@@ -1066,6 +1108,50 @@ class MPCController(Node):
 
         pose = odom_to_pose_2d(self._odom) # type: ignore
         v = self._odom.twist.twist.linear.x
+
+
+        #############################
+        # NOTE: ADDITIONAL CONTROL LOGIC
+
+        # Check for collision or stuck condition
+        v = self._odom.twist.twist.linear.x
+
+        """
+        If vel is less than 0.1 for more than 1.5 seconds, the car is considered stuck and will trigger reverse.
+
+        Else if not less than 0.1 anymore but still reversing, the car will continue reversing until the reverse duration 5 seconds.
+        """
+
+        # Zero-velocity detection (e.g., stuck for > 1.5s while enabled)
+        if self._enable_control and abs(v) < 0.1:
+            # If zero vel just started
+            if self._zero_vel_start_time is None:
+                self._zero_vel_start_time = now
+            # If zero vel has been ongoing for more than 1.5 seconds, change to reverse state!
+            elif (now - self._zero_vel_start_time).nanoseconds / 1e9 > 1.5:
+                if self._recovery_state == "NORMAL":
+                    self._recovery_state = "REVERSING"
+                    self._reverse_start_time = now
+                    self.get_logger().warn("Car stuck at 0 velocity! Triggering Reverse...")
+        else:
+            # If still reversing and elapsed
+            if self._reverse_start_time is not None:
+                elapsed_from_reverse_start = (now - self._reverse_start_time).nanoseconds / 1e9
+                if elapsed_from_reverse_start > self._REVERSE_DURATION:
+                    self._recovery_state = "NORMAL"
+                    self._reverse_start_time = None
+                    self._zero_vel_start_time = None
+                    self._publish_gear(GearCommand.DRIVE)
+
+        # Collision detection trigger
+        if is_colliding and self._recovery_state == "NORMAL":
+            self._recovery_state = "REVERSING"
+            self._reverse_start_time = now
+            self.get_logger().warn("Collision detected! Triggering Reverse...")
+
+        ############################
+
+
 
         self._car.update_states(pose.x, pose.y, pose.theta)
         # print(f"car x: {self._car.temporal_state.x}, y: {self._car.temporal_state.y}, psi: {self._car.temporal_state.psi}")
@@ -1231,8 +1317,54 @@ class MPCController(Node):
                 u, max_delta = self._mpc.get_control()
             # self.get_logger().info(f"u: {u}")
 
+        ##################
+        # NOTE: ADDITIONAL
+
+        if self._recovery_state == "REVERSING":
+            elapsed_reverse = (now - self._reverse_start_time).nanoseconds / 1e9
+            if elapsed_reverse < self._REVERSE_DURATION:
+                # Override the MPC control command to back up
+                u[0] = self._REVERSE_SPEED
+                u[1] = 0.0  # Keep steering straight
+                max_delta = 0.0
+                self._publish_gear(GearCommand.REVERSE) # SHIFT TO REVERSE
+            else:
+                # Exit recovery
+                self._recovery_state = "NORMAL"
+                self._reverse_start_time = None
+                self._zero_vel_start_time = None
+                self._last_colliding_time = None
+                self._publish_gear(GearCommand.DRIVE) # SHIFT TO DRIVE
+                
+                # Reset Frenet/MPC states to avoid jumping back into obstacle
+                if hasattr(self, '_frenet_planner'):
+                    self._frenet_planner.state = type(self._frenet_planner.state).IDLE
+                self._frenet_override = None
+                self.get_logger().info("Reverse maneuver complete. Resuming forward drive.")
+
+        # # State Machine Execution
+        # if self._recovery_state == "REVERSING":
+        #     elapsed_reverse = (now - self._reverse_start_time).nanoseconds / 1e9
+        #     if elapsed_reverse < self._REVERSE_DURATION:
+        #         # Override control command to back up
+        #         u = [self._REVERSE_SPEED, 0.0]
+        #         acc = self.KP * (u[0] - v)
+        #         acc = np.clip(acc, self._mpc_cfg.a_min, self._mpc_cfg.a_max)
+        #     else:
+        #         # Exit recovery
+        #         self._recovery_state = "NORMAL"
+        #         self._reverse_start_time = None
+        #         self._zero_vel_start_time = None
+        #         self._last_colliding_time = None
+                
+        #         # Reset Frenet/MPC states to avoid jumping back into obstacle
+        #         if hasattr(self, '_frenet_planner'):
+        #             self._frenet_planner.state = type(self._frenet_planner.state).IDLE
+        #         self._frenet_override = None
+        #         self.get_logger().info("Reverse maneuver complete. Resuming forward drive.")
 
 
+        ###################3
 
         ## NOTE: WHY? ##
 

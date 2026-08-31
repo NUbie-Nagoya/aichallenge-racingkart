@@ -128,7 +128,7 @@ class MPCController(Node):
     PLOT_RESULTS = False
     ANIMATION_INTERVAL = 20
 
-    KP = 100.0
+    KP = 160.0
 
     def __init__(self, config_path: str, ref_vel_config_path: Optional[str]) -> None:
         super().__init__("mpc_controller") # type: ignore

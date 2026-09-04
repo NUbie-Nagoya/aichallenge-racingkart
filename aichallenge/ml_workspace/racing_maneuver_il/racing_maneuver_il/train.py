@@ -12,11 +12,12 @@ import numpy as np
 import torch
 import yaml
 from torch.nn import functional as F
+from tqdm.auto import tqdm
 
-
-from .checkpoint import save_checkpoint
+from .checkpoint import load_checkpoint, save_checkpoint
 from .dataset import FrameData, TemporalDataset, grouped_split, save_split_manifest
-from .metrics import compute_metrics
+from .metrics import compute_metrics, normalized_selection_score
+from .merge_datasets import merge_processed_datasets
 from .model import TemporalPolicy
 from .normalization import Normalizer
 
@@ -31,42 +32,6 @@ def _physical(
     normalized: torch.Tensor, low: torch.Tensor, high: torch.Tensor
 ) -> torch.Tensor:
     return low + (normalized + 1.0) * 0.5 * (high - low)
-
-
-def resolve_device(requested: str) -> torch.device:
-    """Resolve an explicit training device without silently downgrading CUDA."""
-    value = str(requested).lower()
-    if value not in {"cuda", "cpu", "auto"}:
-        raise ValueError("device must be one of: cuda, cpu, auto")
-    if value == "cpu":
-        return torch.device("cpu")
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if value == "cuda":
-        raise RuntimeError(
-            "CUDA was requested but is unavailable; run inside the AIC_DEV GPU "
-            "container or explicitly set device: cpu."
-        )
-    return torch.device("cpu")
-
-
-def _device_batches(
-    *,
-    lidar: torch.Tensor,
-    aux: torch.Tensor,
-    targets: torch.Tensor,
-    end_indices: torch.Tensor,
-    batch_size: int,
-    history_length: int,
-):
-    """Yield temporal batches assembled entirely on the selected device."""
-    offsets = torch.arange(
-        1 - history_length, 1, device=end_indices.device, dtype=torch.long
-    )
-    for start in range(0, len(end_indices), batch_size):
-        ends = end_indices[start : start + batch_size]
-        window_indices = ends.unsqueeze(1) + offsets.unsqueeze(0)
-        yield lidar[window_indices], aux[window_indices], targets[ends], ends
 
 
 def grouped_action_change_loss(
@@ -100,6 +65,83 @@ def _required(config: dict, key: str):
     return config[key]
 
 
+def _resolve_device(requested: str) -> torch.device:
+    if requested == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if requested == "cuda":
+        if not torch.cuda.is_available():
+            raise ValueError("CUDA is unavailable; install a CUDA-enabled PyTorch build or use device: cpu")
+        return torch.device("cuda")
+    if requested == "cpu":
+        return torch.device("cpu")
+    raise ValueError("device must be one of: auto, cpu, cuda")
+
+
+def resolve_device(requested: str) -> torch.device:
+    """Backward-compatible public device resolver used by existing callers/tests."""
+    try:
+        return _resolve_device(requested)
+    except ValueError as error:
+        if requested == "cuda" and "CUDA is unavailable" in str(error):
+            raise RuntimeError(
+                "CUDA was requested but is unavailable; run inside the AIC_DEV GPU container or explicitly set device: cpu."
+            ) from error
+        raise
+
+
+def _device_batches(
+    *,
+    lidar: torch.Tensor,
+    aux: torch.Tensor,
+    targets: torch.Tensor,
+    end_indices: torch.Tensor,
+    batch_size: int,
+    history_length: int,
+):
+    """Yield temporal batches assembled entirely on the selected device."""
+    offsets = torch.arange(
+        1 - history_length, 1, device=end_indices.device, dtype=torch.long
+    )
+    for start in range(0, len(end_indices), batch_size):
+        ends = end_indices[start : start + batch_size]
+        indices = ends.unsqueeze(1) + offsets.unsqueeze(0)
+        yield lidar[indices], aux[indices], targets[ends], ends
+
+
+def _create_run_directory(output_root: Path) -> Path:
+    output_root.mkdir(parents=True, exist_ok=True)
+    existing = [
+        int(path.name.removeprefix("run-"))
+        for path in output_root.iterdir()
+        if path.is_dir() and path.name.removeprefix("run-").isdigit()
+    ]
+    run_number = max(existing, default=0) + 1
+    while True:
+        destination = output_root / f"run-{run_number}"
+        try:
+            destination.mkdir()
+            return destination
+        except FileExistsError:
+            run_number += 1
+
+
+def _configured_dataset_path(config: dict, output_root: Path) -> Path:
+    """Resolve one dataset or merge several complete recording datasets from YAML."""
+    has_single = "dataset" in config
+    has_many = "datasets" in config
+    if has_single == has_many:
+        raise ValueError("configure exactly one of dataset or datasets")
+    if has_single:
+        return Path(str(config["dataset"]))
+    sources = config["datasets"]
+    if not isinstance(sources, list) or not sources or not all(isinstance(item, str) for item in sources):
+        raise ValueError("datasets must be a nonempty list of dataset paths")
+    output_root.mkdir(parents=True, exist_ok=True)
+    merged = output_root / "merged-input.npz"
+    merge_processed_datasets(sources, merged, output_root / "merged-input.report.json")
+    return merged
+
+
 def run_training(config: dict) -> dict:
     config = dict(config)
     seed = int(config.get("seed", 0))
@@ -107,10 +149,10 @@ def run_training(config: dict) -> dict:
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.set_num_threads(int(config.get("torch_threads", 1)))
-    device = resolve_device(config.get("device", "cuda"))
-    dataset_path = Path(_required(config, "dataset"))
-    output = Path(_required(config, "output_dir"))
-    output.mkdir(parents=True, exist_ok=True)
+    device = _resolve_device(str(config.get("device", "cpu")))
+    output_root = Path(_required(config, "output_dir"))
+    dataset_path = _configured_dataset_path(config, output_root)
+    output = _create_run_directory(output_root)
     frames = FrameData.from_npz(dataset_path)
     limits = _required(config, "action_limits")
     low = torch.tensor(limits["low"], dtype=torch.float32, device=device)
@@ -163,9 +205,8 @@ def run_training(config: dict) -> dict:
     batch_size = int(config.get("batch_size", 32))
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
-    # Keep source frames and temporal indexing on-device.  This avoids per-sample
-    # NumPy-to-Tensor conversion, Python DataLoader collation, and host/device copies
-    # in the hot training loop.
+    # Keep source frames and temporal indexing on-device. This removes Python
+    # DataLoader collation and host-to-device copies from the training hot path.
     lidar_device = torch.as_tensor(lidar, dtype=torch.float32, device=device)
     aux_device = torch.as_tensor(aux, dtype=torch.float32, device=device)
     train_end_indices = torch.as_tensor(
@@ -176,10 +217,32 @@ def run_training(config: dict) -> dict:
     )
     groups = normalized_frames.groups
     adjacent = np.zeros(len(groups), dtype=np.bool_)
-    adjacent[1:] = (groups[1:] == groups[:-1])
+    adjacent[1:] = groups[1:] == groups[:-1]
     adjacent_device = torch.as_tensor(adjacent, dtype=torch.bool, device=device)
     model_config = dict(config.get("model", {}))
-    model = TemporalPolicy(**model_config).to(device)
+    initialized_from_checkpoint = None
+    init_checkpoint = config.get("init_checkpoint")
+    if init_checkpoint is not None:
+        checkpoint_path = Path(str(init_checkpoint)).expanduser().resolve()
+        if not checkpoint_path.is_file():
+            raise ValueError(f"init_checkpoint does not exist: {checkpoint_path}")
+        model, checkpoint_payload = load_checkpoint(checkpoint_path, map_location="cpu")
+        checkpoint_model_config = dict(checkpoint_payload["model_config"])
+        if model_config and model_config != checkpoint_model_config:
+            raise ValueError(
+                "model config does not match init_checkpoint model contract"
+            )
+        model_config = checkpoint_model_config
+        initialized_from_checkpoint = {
+            "path": str(checkpoint_path),
+            "sha256": hashlib.sha256(checkpoint_path.read_bytes()).hexdigest(),
+            "epoch": int(checkpoint_payload["epoch"]),
+        }
+        model = model.to(device)
+    else:
+        model = TemporalPolicy(**model_config).to(device)
+    # Fine-tuning deliberately starts with a fresh optimizer: optimizer moments
+    # from a prior dataset are not assumed valid for the new data distribution.
     optimizer = torch.optim.Adam(
         model.parameters(), lr=float(config.get("learning_rate", 1e-3))
     )
@@ -187,15 +250,26 @@ def run_training(config: dict) -> dict:
     ws = float(weights.get("steering", 1))
     wl = float(weights.get("longitudinal", 1))
     wc = float(weights.get("action_change", 0.05))
+    selection = dict(config.get("selection_metric", {}))
+    steering_tolerance_rad = float(selection.get("steering_tolerance_rad", 0.05))
+    target_speed_tolerance_mps = float(selection.get("target_speed_tolerance_mps", 0.5))
+    early_stopping = dict(config.get("early_stopping", {}))
+    patience = int(early_stopping.get("patience", 20))
+    min_delta = float(early_stopping.get("min_delta", 0.002))
+    if patience < 0 or not np.isfinite(min_delta) or min_delta < 0.0:
+        raise ValueError("early_stopping patience/min_delta must be nonnegative")
     resolved = dict(config)
     resolved.update(
         {
             "seed": seed,
             "dataset": str(dataset_path),
+            "model": model_config,
             "output_dir": str(output),
             "device": str(device),
         }
     )
+    if initialized_from_checkpoint is not None:
+        resolved["initialized_from_checkpoint"] = initialized_from_checkpoint
     (output / "resolved_config.yaml").write_text(
         yaml.safe_dump(resolved, sort_keys=True)
     )
@@ -210,19 +284,26 @@ def run_training(config: dict) -> dict:
     curves = []
     best = float("inf")
     best_epoch = -1
+    stale_epochs = 0
     epochs = int(config.get("epochs", 10))
     for epoch in range(epochs):
         model.train()
         total_loss = torch.zeros((), dtype=torch.float32, device=device)
         batch_count = 0
-        for lidar_batch, aux_batch, target, ends in _device_batches(
-            lidar=lidar_device,
-            aux=aux_device,
-            targets=target_tensor,
-            end_indices=train_end_indices,
-            batch_size=batch_size,
-            history_length=train_data.history_length,
-        ):
+        progress = tqdm(
+            _device_batches(
+                lidar=lidar_device,
+                aux=aux_device,
+                targets=target_tensor,
+                end_indices=train_end_indices,
+                batch_size=batch_size,
+                history_length=train_data.history_length,
+            ),
+            desc=f"Epoch {epoch + 1}/{epochs}",
+            total=(len(train_end_indices) + batch_size - 1) // batch_size,
+            unit="batch",
+        )
+        for lidar_batch, aux_batch, target, ends in progress:
             optimizer.zero_grad()
             normalized, _ = model(lidar_batch, aux_batch)
             prediction = _physical(normalized, low, high)
@@ -241,6 +322,7 @@ def run_training(config: dict) -> dict:
             optimizer.step()
             total_loss = total_loss + loss.detach()
             batch_count += 1
+            progress.set_postfix(loss=f"{loss.detach().item():.4f}")
         model.eval()
         predictions = []
         validation_targets = []
@@ -263,8 +345,10 @@ def run_training(config: dict) -> dict:
         validation = compute_metrics(
             prediction_array, target_array, maneuver_classes=np.asarray(maneuvers)
         )
-        score = float(validation["steering_mae_rad"]) + float(
-            validation["longitudinal_acceleration_mae_mps2"]
+        score = normalized_selection_score(
+            validation,
+            steering_tolerance_rad=steering_tolerance_rad,
+            target_speed_tolerance_mps=target_speed_tolerance_mps,
         )
         curve = {
             "epoch": epoch,
@@ -281,9 +365,10 @@ def run_training(config: dict) -> dict:
             metadata=metadata,
             model_config=model_config,
         )
-        if score < best:
+        if score < best - min_delta:
             best = score
             best_epoch = epoch
+            stale_epochs = 0
             save_checkpoint(
                 output / "best.pt",
                 model,
@@ -294,6 +379,10 @@ def run_training(config: dict) -> dict:
                 model_config=model_config,
             )
             _write_json(output / "validation_metrics.json", validation)
+        else:
+            stale_epochs += 1
+        if patience and stale_epochs >= patience:
+            break
     _write_json(output / "curves.json", {"epochs": curves})
     return {
         "best_epoch": best_epoch,

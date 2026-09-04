@@ -13,7 +13,7 @@ def test_processed_dataset_and_audit_report_are_written_atomically(tmp_path):
     n = 12
     arrays = {
         "lidar": np.ones((n, 360), np.float32),
-        "aux": np.ones((n, 11), np.float32),
+        "aux": np.ones((n, 9), np.float32),
         "targets": np.ones((n, 2), np.float32),
         "recording_ids": np.array(["r"] * n),
         "episode_ids": np.array(["e"] * n),
@@ -27,15 +27,16 @@ def test_processed_dataset_and_audit_report_are_written_atomically(tmp_path):
         output, report_path, arrays, rejected_reasons={"stale_scan": 2}, input_rows=14
     )
     with np.load(output) as stored:
-        assert stored["lidar"].shape == (n, 360) and stored["schema_version"] == 1
+        assert stored["lidar"].shape == (n, 360) and stored["schema_version"] == 3
     assert json.loads(report_path.read_text()) == report
     assert report["accepted_rows"] == 12 and report["rejected_rows"] == 2
+    assert "target_speed" in report["command_distributions"]
 
 
 def test_processed_dataset_rejects_nonfinite_or_wrong_shapes(tmp_path):
     arrays = {
         "lidar": np.ones((2, 359)),
-        "aux": np.ones((2, 11)),
+        "aux": np.ones((2, 9)),
         "targets": np.ones((2, 2)),
         "recording_ids": np.array(["r"] * 2),
         "episode_ids": np.array(["e"] * 2),

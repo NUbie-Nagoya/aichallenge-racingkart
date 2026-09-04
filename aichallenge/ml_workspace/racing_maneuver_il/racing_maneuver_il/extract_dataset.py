@@ -17,12 +17,13 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from tqdm.auto import tqdm
 
 from .extraction import Stamped, latest_at_or_before
 from .lidar import canonicalize_scan
-from .opponents import OpponentObservation, summarize_opponents
+from .opponents import OpponentObservation
 from .recording_metadata import RecordingMetadata
-from .schema import SCHEMA_VERSION, V2X_MAXIMUM_AGE_S
+from .schema import AUX_FEATURE_NAMES, SCHEMA_VERSION
 
 TOPICS = {
     "control": "/control/command/control_cmd",
@@ -31,7 +32,7 @@ TOPICS = {
     "acceleration": "/localization/acceleration",
     "steering": "/vehicle/status/steering_status",
     "mode": "/vehicle/status/control_mode",
-    "v2x": "/v2x/vehicle_positions",
+
 }
 OPTIONAL_TOPICS = {
     "reset": "/initialpose",
@@ -50,7 +51,7 @@ class ExtractionConfig:
     acceleration_maximum_age_s: float = 0.10
     steering_maximum_age_s: float = 0.10
     mode_maximum_age_s: float = 0.50
-    v2x_maximum_age_s: float = V2X_MAXIMUM_AGE_S
+
     require_episode_markers: bool = False
     split_on_lap: bool = False
     lap_maximum_age_s: float = 0.25
@@ -64,7 +65,7 @@ class ExtractionConfig:
             self.acceleration_maximum_age_s,
             self.steering_maximum_age_s,
             self.mode_maximum_age_s,
-            self.v2x_maximum_age_s,
+
             self.lap_maximum_age_s,
         )
         if not all(math.isfinite(value) and value > 0.0 for value in values):
@@ -162,6 +163,26 @@ def extract_aligned_streams(
         raise ValueError("lap splitting is required but the /awsim/status stream is empty")
 
     labels = _downsample_labels(streams["control"], config.sample_rate_hz)
+
+    # Precompute sorted streams + timestamp arrays ONCE. The per-frame causal
+    # lookup below then bisects instead of re-sorting the whole stream each
+    # call (which was O(frames * sources * n log n)). Streams are already
+    # time-sorted by read_bag_streams; sorting again is a no-op safety net.
+    from bisect import bisect_right as _bisect_right
+
+    _sorted = {name: sorted(rows, key=lambda r: r.timestamp_s) for name, rows in streams.items()}
+    _tstamps = {name: [r.timestamp_s for r in rows] for name, rows in _sorted.items()}
+
+    def _at(name: str, t: float, max_age_s: float):
+        ts = _tstamps[name]
+        i = _bisect_right(ts, t) - 1
+        if i < 0:
+            raise ValueError("no causal observation at or before label time")
+        age = t - ts[i]
+        if age > max_age_s:
+            raise ValueError(f"stale source observation ({age:.6f}s > {max_age_s:.6f}s)")
+        return _sorted[name][i].value, age
+
     accepted_lidar: list[np.ndarray] = []
     accepted_aux: list[np.ndarray] = []
     accepted_targets: list[np.ndarray] = []
@@ -211,11 +232,11 @@ def extract_aligned_streams(
         "acceleration": config.acceleration_maximum_age_s,
         "steering": config.steering_maximum_age_s,
         "mode": config.mode_maximum_age_s,
-        "v2x": config.v2x_maximum_age_s,
+
     }
     source_order = tuple(age_limits)
 
-    for label in labels:
+    for label in tqdm(labels, desc="Aligning frames", total=len(labels), unit="frame"):
         while next_marker is not None and next_marker.timestamp_s <= label.timestamp_s:
             event = str(getattr(next_marker.value, "data", "")).strip().upper()
             if event == "START":
@@ -264,8 +285,8 @@ def extract_aligned_streams(
             ages: dict[str, float] = {}
             timestamps: dict[str, float] = {}
             for name in source_order:
-                selected[name], ages[name] = latest_at_or_before(
-                    streams[name], label.timestamp_s, max_age_s=age_limits[name]
+                selected[name], ages[name] = _at(
+                    name, label.timestamp_s, max_age_s=age_limits[name]
                 )
                 timestamps[name] = label.timestamp_s - ages[name]
         except ValueError:
@@ -276,8 +297,8 @@ def extract_aligned_streams(
         lap_id: int | None = None
         if config.split_on_lap:
             try:
-                lap_status, _ = latest_at_or_before(
-                    streams["lap"],
+                lap_status, _ = _at(
+                    "lap",
                     label.timestamp_s,
                     max_age_s=config.lap_maximum_age_s,
                 )
@@ -316,25 +337,11 @@ def extract_aligned_streams(
                 cosine * speed - sine * lateral_speed,
                 sine * speed + cosine * lateral_speed,
             )
-            current_opponents = _opponent_rows(
-                selected["v2x"], timestamps["v2x"], ego_vehicle_id
-            )
-            prior_opponents = _prior_opponent_map(
-                streams["v2x"], timestamps["v2x"], ego_vehicle_id
-            )
-            opponent = summarize_opponents(
-                (float(position.x), float(position.y)),
-                yaw,
-                velocity_map,
-                current_opponents,
-                label.timestamp_s,
-                previous=prior_opponents,
-                max_age_s=config.v2x_maximum_age_s,
-            )
+
             target = np.asarray(
                 [
                     float(label.value.lateral.steering_tire_angle),
-                    float(label.value.longitudinal.acceleration),
+                    float(label.value.longitudinal.speed),
                 ],
                 dtype=np.float32,
             )
@@ -349,17 +356,20 @@ def extract_aligned_streams(
                                     selected["acceleration"], "accel.accel.linear.x"
                                 )
                             ),
+                            float(position.x),
+                            float(position.y),
+                            math.sin(yaw),
+                            math.cos(yaw),
                         ],
                         dtype=np.float32,
                     ),
                     np.zeros(2, dtype=np.float32)
                     if boundary_pending
                     else previous_action,
-                    opponent.as_array(),
                 )
             ).astype(np.float32)
             if (
-                auxiliary.shape != (11,)
+                auxiliary.shape != (9,)
                 or not np.all(np.isfinite(auxiliary))
                 or not np.all(np.isfinite(target))
             ):
@@ -423,7 +433,7 @@ def extract_aligned_streams(
         else np.empty((0, 360), dtype=np.float32),
         "aux": np.stack(accepted_aux).astype(np.float32)
         if count
-        else np.empty((0, 11), dtype=np.float32),
+        else np.empty((0, 9), dtype=np.float32),
         "targets": np.stack(accepted_targets).astype(np.float32)
         if count
         else np.empty((0, 2), dtype=np.float32),
@@ -470,11 +480,11 @@ def _stamp_seconds(message: Any) -> float | None:
 
 def _clock_time_at_or_before(
     clock_rows: list[tuple[float, float]], receive_time_s: float
-) -> float:
+) -> float | None:
     """Map a headerless marker's bag time to the latest causal simulated clock time."""
     index = bisect_right([row[0] for row in clock_rows], receive_time_s) - 1
     if index < 0:
-        raise ValueError("episode marker predates the first recorded simulation clock")
+        return None
     return clock_rows[index][1]
 
 
@@ -502,8 +512,11 @@ def read_bag_streams(bag_path: str | Path) -> dict[str, list[Stamped[Any]]]:
             if connection.topic == "/clock"
         ]
         clock_rows: list[tuple[float, float]] = []
-        for connection, receive_time_ns, raw in reader.messages(
-            connections=clock_connections
+        for connection, receive_time_ns, raw in tqdm(
+            reader.messages(connections=clock_connections),
+            desc="Reading clock",
+            total=sum(connection.msgcount for connection in clock_connections),
+            unit="message",
         ):
             message = reader.deserialize(raw, connection.msgtype)
             clock_rows.append(
@@ -518,8 +531,11 @@ def read_bag_streams(bag_path: str | Path) -> dict[str, list[Stamped[Any]]]:
             for connection in reader.connections
             if connection.topic in topic_to_name
         ]
-        for connection, receive_time_ns, raw in reader.messages(
-            connections=connections
+        for connection, receive_time_ns, raw in tqdm(
+            reader.messages(connections=connections),
+            desc="Reading bag streams",
+            total=sum(connection.msgcount for connection in connections),
+            unit="message",
         ):
             message = reader.deserialize(raw, connection.msgtype)
             name = topic_to_name[connection.topic]
@@ -617,7 +633,7 @@ def write_processed_dataset(
     n = len(values["lidar"])
     if (
         values["lidar"].shape != (n, 360)
-        or values["aux"].shape != (n, 11)
+        or values["aux"].shape != (n, len(AUX_FEATURE_NAMES))
         or values["targets"].shape != (n, 2)
     ):
         raise ValueError("processed arrays violate schema shapes")
@@ -644,7 +660,7 @@ def write_processed_dataset(
                 "min": float(values["targets"][:, 0].min()),
                 "max": float(values["targets"][:, 0].max()),
             },
-            "longitudinal_acceleration": {
+            "target_speed": {
                 "min": float(values["targets"][:, 1].min()),
                 "max": float(values["targets"][:, 1].max()),
             },

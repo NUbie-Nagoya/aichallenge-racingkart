@@ -8,9 +8,9 @@ from racing_maneuver_il.merge_datasets import merge_processed_datasets
 def write_dataset(path: Path, recording: str, offset: float) -> None:
     np.savez_compressed(
         path,
-        schema_version=np.asarray(1, dtype=np.int64),
+        schema_version=np.asarray(3, dtype=np.int64),
         lidar=np.full((2, 360), offset, dtype=np.float32),
-        aux=np.full((2, 11), offset, dtype=np.float32),
+        aux=np.full((2, 9), offset, dtype=np.float32),
         targets=np.full((2, 2), offset, dtype=np.float32),
         recording_ids=np.asarray([recording, recording]),
         episode_ids=np.asarray(["scenario::0", "scenario::0"]),

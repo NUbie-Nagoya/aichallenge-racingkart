@@ -18,11 +18,10 @@ from .schema import (
     CONTROL_RATE_HZ,
     HISTORY_LENGTH,
     MODEL_MAX_RANGE_M,
-    OPPONENT_FORWARD_CORRIDOR_HALF_WIDTH_M,
-    OPPONENT_MAXIMUM_SPEED_MPS,
+
     SCHEMA_VERSION,
     TARGET_NAMES,
-    V2X_MAXIMUM_AGE_S,
+
 )
 
 
@@ -32,9 +31,7 @@ def _contract(wrapper: ExportPolicy, metadata: dict) -> dict:
         "canonical_lidar_rays",
         "canonical_lidar_fov_deg",
         "model_max_range_m",
-        "opponent_forward_corridor_half_width_m",
-        "opponent_maximum_speed_mps",
-        "v2x_maximum_age_s",
+
         "history_length",
         "control_rate_hz",
         "feature_ordering",
@@ -53,14 +50,12 @@ def _contract(wrapper: ExportPolicy, metadata: dict) -> dict:
         "canonical_lidar_rays": CANONICAL_LIDAR_RAYS,
         "canonical_lidar_fov_deg": CANONICAL_LIDAR_FOV_DEG,
         "model_max_range_m": MODEL_MAX_RANGE_M,
-        "opponent_forward_corridor_half_width_m": OPPONENT_FORWARD_CORRIDOR_HALF_WIDTH_M,
-        "opponent_maximum_speed_mps": OPPONENT_MAXIMUM_SPEED_MPS,
-        "v2x_maximum_age_s": V2X_MAXIMUM_AGE_S,
+
         "history_length": HISTORY_LENGTH,
         "control_rate_hz": CONTROL_RATE_HZ,
         "feature_ordering": ["canonical_lidar_ranges_m", *AUX_FEATURE_NAMES],
         "target_ordering": list(TARGET_NAMES),
-        "output_units": ["rad", "m/s^2"],
+        "output_units": ["rad", "m/s"],
         "action_low": wrapper.action_low.detach().cpu().tolist(),
         "action_high": wrapper.action_high.detach().cpu().tolist(),
         "normalizer": {
@@ -86,7 +81,7 @@ def export_torchscript(
     temporary = destination.with_suffix(destination.suffix + ".tmp")
     torch.jit.save(scripted, str(temporary), _extra_files=extra)
     loaded = torch.jit.load(str(temporary))
-    loaded(torch.zeros(1, HISTORY_LENGTH, 360), torch.zeros(1, HISTORY_LENGTH, 11))
+    loaded(torch.zeros(1, HISTORY_LENGTH, 360), torch.zeros(1, HISTORY_LENGTH, len(AUX_FEATURE_NAMES)))
     temporary.replace(destination)
     sidecar = destination.with_suffix(destination.suffix + ".metadata.json")
     sidecar_temporary = sidecar.with_suffix(sidecar.suffix + ".tmp")

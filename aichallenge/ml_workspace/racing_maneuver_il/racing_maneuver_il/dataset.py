@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from .schema import AUX_FEATURE_NAMES
 
 
 @dataclass(frozen=True)
@@ -36,7 +37,7 @@ class FrameData:
             raise ValueError("all frame fields must have equal length")
         if (
             self.lidar.shape[1:] != (360,)
-            or self.aux.shape[1:] != (11,)
+            or self.aux.shape[1:] != (len(AUX_FEATURE_NAMES),)
             or self.targets.shape[1:] != (2,)
         ):
             raise ValueError("frame tensor shapes violate schema")

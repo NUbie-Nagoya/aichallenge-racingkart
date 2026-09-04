@@ -22,8 +22,8 @@ def _base(prediction: np.ndarray, target: np.ndarray) -> dict[str, float | int]:
         "steering_rmse_rad": steering_rmse,
         "steering_mae_deg": float(np.rad2deg(steering_mae)),
         "steering_rmse_deg": float(np.rad2deg(steering_rmse)),
-        "longitudinal_acceleration_mae_mps2": float(np.mean(np.abs(longitudinal))),
-        "longitudinal_acceleration_rmse_mps2": float(np.sqrt(np.mean(longitudinal**2))),
+        "target_speed_mae_mps": float(np.mean(np.abs(longitudinal))),
+        "target_speed_rmse_mps": float(np.sqrt(np.mean(longitudinal**2))),
         "action_change_mae": change,
     }
 
@@ -73,3 +73,20 @@ def compute_metrics(
         )
         report["by_closing_speed_bin"] = _slices(prediction, target, labels)
     return report
+
+
+def normalized_selection_score(
+    metrics: dict,
+    *,
+    steering_tolerance_rad: float,
+    target_speed_tolerance_mps: float,
+) -> float:
+    """Unitless validation objective from explicit physical error tolerances."""
+    tolerances = (steering_tolerance_rad, target_speed_tolerance_mps)
+    if not all(np.isfinite(value) and value > 0.0 for value in tolerances):
+        raise ValueError("selection tolerances must be finite and positive")
+    return float(
+        float(metrics["steering_mae_rad"]) / steering_tolerance_rad
+        + float(metrics["target_speed_mae_mps"])
+        / target_speed_tolerance_mps
+    )

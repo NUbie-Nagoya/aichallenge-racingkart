@@ -9,6 +9,7 @@ import torch
 from torch import Tensor, nn
 
 from .normalization import Normalizer
+from .schema import AUX_FEATURE_NAMES
 
 
 class TemporalPolicy(nn.Module):
@@ -19,6 +20,7 @@ class TemporalPolicy(nn.Module):
         self.lidar_embedding = lidar_embedding
         self.aux_embedding = aux_embedding
         self.hidden_size = hidden_size
+        self.auxiliary_dim = len(AUX_FEATURE_NAMES)
         self.scan_encoder = nn.Sequential(
             nn.Conv1d(1, 8, kernel_size=9, stride=3, padding=4),
             nn.ReLU(),
@@ -30,7 +32,7 @@ class TemporalPolicy(nn.Module):
             nn.ReLU(),
         )
         self.aux_encoder = nn.Sequential(
-            nn.Linear(11, 32), nn.ReLU(), nn.Linear(32, aux_embedding), nn.ReLU()
+            nn.Linear(self.auxiliary_dim, 32), nn.ReLU(), nn.Linear(32, aux_embedding), nn.ReLU()
         )
         self.gru = nn.GRU(
             lidar_embedding + aux_embedding, hidden_size, batch_first=True
@@ -49,16 +51,16 @@ class TemporalPolicy(nn.Module):
             lidar.dim() != 3
             or aux.dim() != 3
             or lidar.size(2) != 360
-            or aux.size(2) != 11
+            or aux.size(2) != self.auxiliary_dim
         ):
-            raise ValueError("expected lidar [B,T,360] and aux [B,T,11]")
+            raise ValueError("expected lidar [B,T,360] and correctly sized auxiliary features")
         if lidar.size(0) != aux.size(0) or lidar.size(1) != aux.size(1):
             raise ValueError("lidar and auxiliary batch/time shapes differ")
         batch, time = lidar.size(0), lidar.size(1)
         scan = self.scan_encoder(lidar.reshape(batch * time, 1, 360)).reshape(
             batch, time, self.lidar_embedding
         )
-        state = self.aux_encoder(aux.reshape(batch * time, 11)).reshape(
+        state = self.aux_encoder(aux.reshape(batch * time, self.auxiliary_dim)).reshape(
             batch, time, self.aux_embedding
         )
         sequence, next_hidden = self.gru(torch.cat((scan, state), dim=2), hidden)

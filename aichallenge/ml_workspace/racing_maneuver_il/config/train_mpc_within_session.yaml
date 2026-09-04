@@ -1,23 +1,34 @@
 # MPC-expert, within-session smoke experiment only.
 # Split units are causally bounded complete laps from one recording/session.
 # Metrics are not deployment-quality or cross-scenario generalization metrics.
-dataset: data/processed/mpc/20260827-114404-d6cb0e3d.npz
-output_dir: runs/mpc-within-session-20260827-114404
+# Add every schema-v3 recording here. Training merges them atomically and preserves recording/lap groups.
+datasets:
+  - data/processed/mpc/run1-target-speed-v3.npz
+  # - data/processed/mpc/run2-target-speed-v3.npz
+  - data/processed/mpc/run3-target-speed-v3.npz
+output_dir: runs/mpc-target-speed-20260831-061401
 seed: 42
 device: cuda
 torch_threads: 1
-epochs: 20
-batch_size: 128
-learning_rate: 0.001
+# Preserve the current local throughput tuning.
+epochs: 250
+batch_size: 512
+learning_rate: 0.0002
 split_ratios: [0.70, 0.15, 0.15]
 model:
-  lidar_embedding: 32
-  aux_embedding: 16
-  hidden_size: 64
+  lidar_embedding: 128
+  aux_embedding: 128
+  hidden_size: 512
 loss_weights:
-  steering: 2.0
+  steering: 2.5
   longitudinal: 1.0
   action_change: 0.05
+selection_metric:
+  steering_tolerance_rad: 0.05
+  target_speed_tolerance_mps: 0.5
+early_stopping:
+  patience: 20
+  min_delta: 0.002
 action_limits:
-  low: [-1.0, -3.0]
-  high: [1.0, 3.0]
+  low: [-1.0, 0.0]
+  high: [1.0, 15.0]

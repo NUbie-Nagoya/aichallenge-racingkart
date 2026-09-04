@@ -33,16 +33,47 @@ def odom(x=0.0, speed=4.0):
     )
 
 
-def command(steering, acceleration):
+def command(steering, target_speed, acceleration=0.0):
     return ns(
         lateral=ns(steering_tire_angle=steering),
-        longitudinal=ns(acceleration=acceleration),
+        longitudinal=ns(speed=target_speed, acceleration=acceleration),
     )
 
 
 def test_episode_marker_receive_time_maps_causally_to_simulation_clock():
     clock = [(100.0, 1.0), (101.0, 1.1), (102.0, 1.2)]
     assert _clock_time_at_or_before(clock, 101.8) == 1.1
+
+
+def test_headerless_optional_message_before_first_clock_is_skipped():
+    assert _clock_time_at_or_before([(100.0, 1.0)], 99.9) is None
+
+
+def test_alignment_reports_frame_progress(monkeypatch):
+    calls = []
+
+    class Progress:
+        def __init__(self, iterable, **kwargs):
+            calls.append(kwargs)
+            self.iterable = iterable
+
+        def __iter__(self):
+            return iter(self.iterable)
+
+    monkeypatch.setattr("racing_maneuver_il.extract_dataset.tqdm", Progress)
+    streams = {
+        "control": [Stamped(1.00, command(0.1, 4.0))],
+        "scan": [Stamped(0.99, scan(5.0))],
+        "odom": [Stamped(0.99, odom())],
+        "acceleration": [Stamped(0.99, ns(accel=ns(accel=ns(linear=ns(x=0.0)))))],
+        "steering": [Stamped(0.99, ns(steering_tire_angle=0.0))],
+        "mode": [Stamped(0.99, ns(mode=4))],
+    }
+    extract_aligned_streams(
+        streams, recording_id="r", scenario_id="s", maneuver_class="follow",
+        ego_vehicle_id="ego", config=ExtractionConfig(human_control_modes=(4,)),
+    )
+    assert calls == [{"desc": "Aligning frames", "total": 1, "unit": "frame"}]
 
 
 def test_extract_aligned_streams_is_causal_manual_only_and_resets_prior_action():
@@ -70,8 +101,8 @@ def test_extract_aligned_streams_is_causal_manual_only_and_resets_prior_action()
     assert report["accepted_rows"] == 2
     np.testing.assert_allclose(arrays["lidar"][0], 5.0)
     np.testing.assert_allclose(arrays["lidar"][1], 1.0)
-    np.testing.assert_allclose(arrays["aux"][0, 3:5], [0.0, 0.0])
-    np.testing.assert_allclose(arrays["aux"][1, 3:5], [0.1, 0.2])
+    np.testing.assert_allclose(arrays["aux"][0, 7:9], [0.0, 0.0])
+    np.testing.assert_allclose(arrays["aux"][1, 7:9], [0.1, 0.2])
     np.testing.assert_allclose(arrays["targets"], [[0.1, 0.2], [0.2, 0.3]])
     assert arrays["recording_ids"].tolist() == ["recording-a", "recording-a"]
 
@@ -99,7 +130,7 @@ def test_initialpose_event_breaks_episode_and_resets_previous_action():
         ego_vehicle_id="ego",
         config=ExtractionConfig(human_control_modes=(4,)),
     )
-    np.testing.assert_allclose(arrays["aux"][:, 3:5], 0.0)
+    np.testing.assert_allclose(arrays["aux"][:, 7:9], 0.0)
     assert arrays["episode_ids"].tolist() == ["s::0", "s::1"]
 
 
@@ -141,11 +172,11 @@ def test_lap_split_uses_latest_causal_status_and_resets_action_history():
     )
 
     assert arrays["episode_ids"].tolist() == ["s::lap-1", "s::lap-1", "s::lap-2"]
-    np.testing.assert_allclose(arrays["aux"][:, 3:5], [[0.0, 0.0], [0.1, 0.2], [0.0, 0.0]])
+    np.testing.assert_allclose(arrays["aux"][:, 7:9], [[0.0, 0.0], [0.1, 0.2], [0.0, 0.0]])
     assert report["episodes"] == 2
 
 
-def test_reused_v2x_report_preserves_velocity_from_prior_distinct_report():
+def test_v2x_reports_do_not_change_pose_based_policy_features():
     common = {
         "control": [Stamped(1.00, command(0.1, 0.2)), Stamped(1.05, command(0.2, 0.3))],
         "scan": [Stamped(0.99, scan(5.0)), Stamped(1.04, scan(5.0))],
@@ -166,7 +197,7 @@ def test_reused_v2x_report_preserves_velocity_from_prior_distinct_report():
         ego_vehicle_id="ego",
         config=ExtractionConfig(sample_rate_hz=20.0, human_control_modes=(4,)),
     )
-    np.testing.assert_allclose(arrays["aux"][:, 8], [10.0, 10.0], atol=1e-5)
+    np.testing.assert_allclose(arrays["aux"][:, 3:7], [[0.0, 0.0, 0.0, 1.0]] * 2, atol=1e-5)
 
 
 def test_extract_aligned_streams_rejects_non_manual_and_stale_rows():

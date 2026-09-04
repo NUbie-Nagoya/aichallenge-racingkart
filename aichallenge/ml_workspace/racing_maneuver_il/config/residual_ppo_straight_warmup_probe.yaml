@@ -1,0 +1,68 @@
+# One-reset live verification of straight warm-up → BC/PPO handoff.
+version: 1
+bc_checkpoint: runs/mpc-multicar-50lap-headless-finetune-sweep2/run-6/best.pt
+backend_factory: racing_maneuver_il.residual_ros_backend:create_training_backend
+output_root: runs/residual-rl-straight-warmup-probe
+
+training:
+  timesteps: 32
+  seed: 20260902
+  rollout_steps: 32
+  batch_size: 16
+  device: cuda
+  max_steps: 32
+
+warmup:
+  minimum_duration_s: 1.5
+  handoff_speed_mps: 4.5
+  maximum_duration_s: 12.0
+  target_speed_mps: 7.5
+
+ppo:
+  policy: MultiInputPolicy
+  learning_rate: 0.0001
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.20
+  ent_coef: 0.0
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  n_epochs: 1
+  target_kl: null
+
+residual_action:
+  max_steering_delta_rad: 0.001
+  max_target_speed_delta_mps: 0.001
+  steering_rate_limit_rad_s: 1.5
+  target_speed_rate_limit_mps2: 4.0
+  control_rate_hz: 20.0
+
+reward:
+  progress_weight: 4.0
+  speed_weight: 1.0
+  collision_penalty: 100.0
+  off_track_penalty: 50.0
+  danger_clearance_m: 1.5
+  proximity_penalty_weight: 2.0
+  hazard_braking_weight: 0.1
+  hazard_steering_weight: 0.1
+  residual_change_weight: 0.05
+
+crash:
+  velocity_drop_threshold_mps: 0.5
+  maximum_drop_interval_s: 0.5
+  minimum_speed_before_drop_mps: 1.0
+  low_speed_threshold_mps: 0.1
+  low_speed_duration_s: 10.0
+
+backend:
+  control_topic: /control/command/control_cmd
+  reset_topic: /awsim/reset
+  debug_topic: /racing_maneuver/residual_rl/debug
+  control_rate_hz: 20.0
+  speed_control_kp: 1.5
+  acceleration_limit_mps2: 3.0
+  step_timeout_s: 1.0
+  initial_pose_service: /set_initial_pose
+  initial_pose_timeout_s: 2.0
+  control_mode_request_topic: /awsim/control_mode_request_topic

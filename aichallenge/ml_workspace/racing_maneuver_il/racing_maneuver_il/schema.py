@@ -1,6 +1,6 @@
 """Immutable raw feature and action contract."""
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 CANONICAL_LIDAR_RAYS = 360
 CANONICAL_LIDAR_FOV_DEG = 179.0
 MODEL_MAX_RANGE_M = 30.0
@@ -13,16 +13,14 @@ AUX_FEATURE_NAMES = (
     "longitudinal_velocity_mps",
     "measured_steering_rad",
     "longitudinal_acceleration_mps2",
+    "absolute_position_x_m",
+    "absolute_position_y_m",
+    "sin_yaw",
+    "cos_yaw",
     "previous_safe_steering_command_rad",
     "previous_safe_longitudinal_command",
-    "opponent_present",
-    "opponent_relative_x_body_m",
-    "opponent_relative_y_body_m",
-    "opponent_relative_vx_body_mps",
-    "opponent_relative_vy_body_mps",
-    "opponent_age_s",
 )
 TARGET_NAMES = (
     "steering_tire_angle_rad",
-    "longitudinal_acceleration_mps2",
+    "target_longitudinal_speed_mps",
 )

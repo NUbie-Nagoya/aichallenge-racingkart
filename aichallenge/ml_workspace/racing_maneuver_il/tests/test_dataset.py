@@ -15,7 +15,7 @@ def frames():
     n = 36
     return FrameData(
         lidar=np.arange(n, dtype=np.float32)[:, None] * np.ones((n, 360), np.float32),
-        aux=np.arange(n, dtype=np.float32)[:, None] * np.ones((n, 11), np.float32),
+        aux=np.arange(n, dtype=np.float32)[:, None] * np.ones((n, 9), np.float32),
         targets=np.zeros((n, 2), np.float32),
         recording_ids=np.array(["r1"] * 12 + ["r2"] * 12 + ["r3"] * 12),
         episode_ids=np.array(["e1"] * 10 + ["e2"] * 2 + ["e1"] * 12 + ["e1"] * 12),
@@ -30,7 +30,7 @@ def test_histories_are_oldest_to_newest_and_never_cross_groups():
     lidar, aux, _target, meta = ds[0]
     np.testing.assert_array_equal(lidar[:, 0], np.arange(10))
     assert (
-        meta["group"] == "r1::e1" and lidar.shape == (10, 360) and aux.shape == (10, 11)
+        meta["group"] == "r1::e1" and lidar.shape == (10, 360) and aux.shape == (10, 9)
     )
     assert len(ds) == 7  # r1/e1=1, r2/e1=3, r3/e1=3; r1/e2 is too short
 

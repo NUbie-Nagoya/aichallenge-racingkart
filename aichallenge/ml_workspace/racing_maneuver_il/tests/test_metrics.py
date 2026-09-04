@@ -10,7 +10,7 @@ def test_physical_unit_metrics_and_action_change_error():
     assert report["count"] == 3
     assert report["steering_mae_rad"] == np.mean(np.abs(pred[:, 0] - target[:, 0]))
     assert report["steering_mae_deg"] == np.rad2deg(report["steering_mae_rad"])
-    assert report["longitudinal_acceleration_rmse_mps2"] > 0
+    assert report["target_speed_rmse_mps"] > 0
     assert report["action_change_mae"] >= 0
 
 
